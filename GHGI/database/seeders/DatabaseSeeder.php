@@ -11,6 +11,10 @@ class DatabaseSeeder extends Seeder
         $this->call([
             RolesAndUsersSeeder::class,
             SettingsSeeder::class,
+            BarangaysSeeder::class,
+            LgusSeeder::class,
+            LguYearStatsSeeder::class,
+            Module1MasterDataSeeder::class,
         ]);
     }
 }

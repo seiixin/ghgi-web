@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from "react";
-import { Link } from "@inertiajs/react";
+import React, { useMemo, useState, useEffect } from "react";
+import { Link, usePage } from "@inertiajs/react";
 import Badge from "../Shared/Badge";
 
 function cn(...xs) {
@@ -29,6 +29,21 @@ function MenuItem({ href, children, method, danger, onClick }) {
 
 export default function Navbar({ appName = "Laguna Inventory", user }) {
   const [open, setOpen] = useState(false);
+  const { url } = usePage();
+
+  // Close any full-screen backdrop when route changes (prevents click-blocker lingering)
+  useEffect(() => {
+    setOpen(false);
+  }, [url]);
+
+  // Close on ESC
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const initials = useMemo(() => {
     const name = (user?.name || "User").trim();
@@ -41,6 +56,7 @@ export default function Navbar({ appName = "Laguna Inventory", user }) {
   const isAdmin = role === "ADMIN";
 
   const adminMenu = [
+    { href: "/admin/lgus", label: "LGU Masters" },
     { href: "/admin/management/forms", label: "Forms" },
     { href: "/admin/management/quantification-settings", label: "Quantification Settings" },
     { href: "/admin/management/emission-settings", label: "Emission Settings" },
@@ -49,7 +65,7 @@ export default function Navbar({ appName = "Laguna Inventory", user }) {
   ];
 
   return (
-    <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-900">
+    <header className="sticky top-0 z-40 border-b border-slate-800 bg-slate-900">
       <div className="flex items-center justify-between px-6 py-3">
         <div className="flex items-center gap-3">
           <div className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-600/20 ring-1 ring-emerald-500/30">
@@ -67,7 +83,7 @@ export default function Navbar({ appName = "Laguna Inventory", user }) {
             onClick={() => setOpen((v) => !v)}
             className="flex items-center gap-3 rounded-full bg-slate-800/60 px-3 py-1.5 ring-1 ring-slate-700 hover:bg-slate-800/75 transition"
             aria-haspopup="menu"
-            aria-expanded={open ? "true" : "false"}
+            aria-expanded={open}
           >
             <div className="grid h-8 w-8 place-items-center rounded-full bg-slate-700 text-xs font-semibold text-white">
               {initials}
@@ -90,13 +106,15 @@ export default function Navbar({ appName = "Laguna Inventory", user }) {
 
           {open ? (
             <>
+              {/* Backdrop */}
               <button
                 type="button"
-                className="fixed inset-0 z-10"
+                className="fixed inset-0 z-30 cursor-default bg-transparent"
                 onClick={() => setOpen(false)}
                 aria-label="Close menu"
               />
-              <div className="absolute right-0 z-20 mt-2 w-72 overflow-hidden rounded-2xl bg-white shadow-[0_18px_40px_rgba(15,23,42,0.22)] ring-1 ring-slate-200">
+              {/* Menu */}
+              <div className="absolute right-0 z-40 mt-2 w-72 overflow-hidden rounded-2xl bg-white shadow-[0_18px_40px_rgba(15,23,42,0.22)] ring-1 ring-slate-200">
                 <div className="px-4 py-3">
                   <div className="text-sm font-semibold text-slate-900">{user?.name ?? "User"}</div>
                   <div className="text-xs text-slate-600">{user?.email ?? ""}</div>

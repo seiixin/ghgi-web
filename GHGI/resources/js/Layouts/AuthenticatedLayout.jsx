@@ -11,9 +11,12 @@ export default function AuthenticatedLayout({ title, children }) {
   return (
     <div className="min-h-screen bg-slate-50">
       <Navbar appName={appName} user={user} />
-      <div className="flex">
-        <Sidebar user={user} />
-        <main className="flex-1">
+      <div className="flex relative z-0">
+        <div className="relative z-10 shrink-0">
+          <Sidebar user={user} />
+        </div>
+
+        <main className="relative z-20 flex-1">
           <div className="px-8 py-6">
             {title ? (
               <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
