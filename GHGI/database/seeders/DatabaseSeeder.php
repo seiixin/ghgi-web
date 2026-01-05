@@ -15,6 +15,7 @@ class DatabaseSeeder extends Seeder
             LgusSeeder::class,
             LguYearStatsSeeder::class,
             Module1MasterDataSeeder::class,
+            FormsModuleSeeder::class,
         ]);
     }
 }
