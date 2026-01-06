@@ -1,66 +1,82 @@
+// resources/js/Pages/Admin/Submissions/Partials/FormPicker.jsx
+// IMPORTANT: adjust your existing FormPicker to NOT require year.
+// If you already have it, replace with this full file.
+
 import React, { useEffect, useMemo, useState } from "react";
 
-/**
- * FormPicker
- * Fetches available forms for a given year.
- *
- * Expects endpoint:
- *  - GET /api/admin/forms?year=YYYY
- *
- * Accepts flexible payload shapes:
- *  - { data: { formTypes: [...] } }
- *  - { formTypes: [...] }
- *  - { data: [...] }
- *  - [ ... ]
- *
- * Each item should look like:
- *  - { id, name?, code? }
- */
-export default function FormPicker({ year, value, onChange }) {
+function normalizeFormsList(payload) {
+  const list =
+    (Array.isArray(payload) ? payload : null) ??
+    payload?.data?.formTypes ??
+    payload?.formTypes ??
+    payload?.data ??
+    [];
+  return Array.isArray(list) ? list : [];
+}
+
+function asFormLabel(f) {
+  return f?.name ?? f?.key ?? `Form #${f?.id ?? ""}`;
+}
+
+function pickActiveSchema(schemaVersions = []) {
+  const active = (schemaVersions || []).find((v) => v.status === "active");
+  return active || (schemaVersions || [])[0] || null;
+}
+
+function deriveSchemaYear(activeSchema) {
+  if (!activeSchema) return null;
+  const y =
+    activeSchema?.year ??
+    activeSchema?.effective_year ??
+    activeSchema?.schema_year ??
+    activeSchema?.schemaYear ??
+    null;
+  const n = Number(y);
+  if (!Number.isFinite(n) || n <= 1900) return null;
+  return n;
+}
+
+function formatFormOptionLabel(formRow) {
+  const versions = formRow?.schema_versions || formRow?.schemaVersions || [];
+  const active = pickActiveSchema(versions);
+  const y = deriveSchemaYear(active);
+
+  // desired: "Form Name (2023)"
+  return `${asFormLabel(formRow)}${y ? ` (${y})` : ""}`;
+}
+
+export default function FormPicker({ value, onChange, placeholder = "Select a form…" }) {
   const [forms, setForms] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
-  const selectedId = value?.id ?? "";
+  const selectedId = value?.id ? String(value.id) : "";
 
   const options = useMemo(() => {
-    return (Array.isArray(forms) ? forms : []).map((f) => ({
-      id: f.id,
-      label: f.name ?? f.code ?? `Form #${f.id}`,
-      raw: f,
-    }));
+    const list = Array.isArray(forms) ? forms : [];
+    return list
+      .slice()
+      .sort((a, b) => formatFormOptionLabel(a).localeCompare(formatFormOptionLabel(b)));
   }, [forms]);
-
-  function normalizeList(payload) {
-    const list =
-      payload?.data?.formTypes ??
-      payload?.formTypes ??
-      payload?.data ??
-      payload;
-
-    return Array.isArray(list) ? list : [];
-  }
 
   async function load() {
     setLoading(true);
     setErr(null);
 
     try {
-      const params = new URLSearchParams();
-      if (year) params.set("year", String(year));
-
-      const res = await fetch(`/api/admin/forms?${params.toString()}`, {
+      const res = await fetch(`/api/admin/forms?active=all`, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
       });
 
-      const payload = await res.json();
+      const ct = res.headers.get("content-type") || "";
+      const payload = ct.includes("application/json") ? await res.json() : { message: await res.text() };
       if (!res.ok) throw new Error(payload?.message || "Failed to load forms");
 
-      setForms(normalizeList(payload));
+      setForms(normalizeFormsList(payload));
     } catch (e) {
-      setErr(e?.message || "Failed to load forms");
       setForms([]);
+      setErr(e?.message || "Failed to load forms");
     } finally {
       setLoading(false);
     }
@@ -68,43 +84,29 @@ export default function FormPicker({ year, value, onChange }) {
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [year]);
+  }, []);
 
   return (
     <div>
-      <label className="block text-xs text-gray-600">Form</label>
+      {err ? <div className="text-xs text-red-600 mb-1">{err}</div> : null}
 
-      {err && <div className="text-xs text-red-600 mb-1">{err}</div>}
-
-      <div className="flex gap-2">
-        <select
-          className="border rounded px-2 py-2 text-sm w-full"
-          value={selectedId}
-          onChange={(e) => {
-            const id = Number(e.target.value);
-            const opt = options.find((o) => o.id === id);
-            if (typeof onChange === "function") onChange(opt?.raw ?? null);
-          }}
-          disabled={loading}
-        >
-          <option value="">Select a form...</option>
-          {options.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-
-        <button
-          type="button"
-          className="border rounded px-3 py-2 text-sm hover:bg-gray-50"
-          onClick={load}
-          disabled={loading}
-        >
-          {loading ? "..." : "Reload"}
-        </button>
-      </div>
+      <select
+        className="border rounded px-3 py-2 text-sm w-full disabled:opacity-60"
+        value={selectedId}
+        onChange={(e) => {
+          const id = e.target.value;
+          const row = options.find((x) => String(x.id) === String(id)) || null;
+          onChange?.(row);
+        }}
+        disabled={loading}
+      >
+        <option value="">{loading ? "Loading…" : placeholder}</option>
+        {options.map((f) => (
+          <option key={f.id} value={String(f.id)}>
+            {formatFormOptionLabel(f)}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

@@ -1,6 +1,32 @@
+// resources/js/Pages/Admin/Quantification/Submissions/SubmissionsTable.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import DataTable from "../../../../Components/Shared/DataTable";
 import AnswersViewer from "./AnswersViewer";
+import EditSubmissionModal from "./EditSubmissionModal";
+
+function getCsrfToken() {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || "";
+}
+
+function apiHeaders({ json = true } = {}) {
+  const headers = {
+    Accept: "application/json",
+    "X-Requested-With": "XMLHttpRequest",
+  };
+
+  const csrf = getCsrfToken();
+  if (csrf) headers["X-CSRF-TOKEN"] = csrf;
+
+  if (json) headers["Content-Type"] = "application/json";
+  return headers;
+}
+
+async function readPayload(res) {
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return await res.json();
+  const text = await res.text();
+  return { message: text };
+}
 
 function formatDate(v) {
   try {
@@ -47,6 +73,26 @@ function schemaFieldsFromFormRow(row) {
   const schemaJson = activeSchema?.schema_json || activeSchema?.schemaJson || {};
   const fields = Array.isArray(schemaJson.fields) ? schemaJson.fields : [];
   return { fields, activeSchema };
+}
+
+function deriveSchemaYear(activeSchema) {
+  if (!activeSchema) return null;
+  const y =
+    activeSchema?.year ??
+    activeSchema?.effective_year ??
+    activeSchema?.schema_year ??
+    activeSchema?.schemaYear ??
+    null;
+  const n = Number(y);
+  if (!Number.isFinite(n) || n <= 1900) return null;
+  return n;
+}
+
+function formatFormLabelWithYear(formRow) {
+  const versions = formRow?.schema_versions || formRow?.schemaVersions || [];
+  const active = pickActiveSchema(versions);
+  const y = deriveSchemaYear(active);
+  return `${asFormLabel(formRow)}${y ? ` (${y})` : ""}`;
 }
 
 function toLabel(fieldKey) {
@@ -150,7 +196,9 @@ function PieChart({ data = [], size = 120 }) {
             <div key={i} className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="inline-block h-3 w-3 rounded-sm" style={{ background: s.color }} />
-                <span className="truncate" title={String(s.label)}>{String(s.label)}</span>
+                <span className="truncate" title={String(s.label)}>
+                  {String(s.label)}
+                </span>
               </div>
               <div className="tabular-nums text-gray-600">{pct}%</div>
             </div>
@@ -246,8 +294,7 @@ function SummaryTab({ activeForm, schemaFields, status, source, year, submission
               credentials: "same-origin",
             });
 
-            const ct = res.headers.get("content-type") || "";
-            const payload = ct.includes("application/json") ? await res.json() : { message: await res.text() };
+            const payload = await readPayload(res);
             if (!res.ok) throw new Error(payload?.message || `Failed to load submission #${id}`);
 
             const rawAns =
@@ -291,7 +338,9 @@ function SummaryTab({ activeForm, schemaFields, status, source, year, submission
     }
 
     loadAnswers();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [activeForm?.id, submissionRows]);
 
   const matrixColumns = useMemo(() => {
@@ -432,7 +481,12 @@ function FormList({ forms, activeId, onSelect, search, setSearch, loading, error
           <div className="text-base font-semibold text-gray-900">Forms</div>
           <div className="text-sm text-gray-600">Select a form.</div>
         </div>
-        <button type="button" className="border rounded px-3 py-2 text-sm hover:bg-gray-50" onClick={onReload} disabled={loading}>
+        <button
+          type="button"
+          className="border rounded px-3 py-2 text-sm hover:bg-gray-50"
+          onClick={onReload}
+          disabled={loading}
+        >
           Reload
         </button>
       </div>
@@ -467,7 +521,7 @@ function FormList({ forms, activeId, onSelect, search, setSearch, loading, error
                     onClick={() => onSelect(f)}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm font-semibold text-gray-900">{asFormLabel(f)}</div>
+                      <div className="text-sm font-semibold text-gray-900">{formatFormLabelWithYear(f)}</div>
                       <div className="text-xs text-gray-500">#{f.id}</div>
                     </div>
                     <div className="mt-1 text-xs text-gray-500">
@@ -502,6 +556,7 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
   const [status, setStatus] = useState("");
   const [source, setSource] = useState("");
   const [year, setYear] = useState(""); // optional filter
+
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -509,6 +564,16 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
   // viewer
   const [viewerOpen, setViewerOpen] = useState(false);
   const [activeSubmissionId, setActiveSubmissionId] = useState(null);
+
+  // edit modal
+  const [editOpen, setEditOpen] = useState(false);
+  const [editId, setEditId] = useState(null);
+
+  // delete modal
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteId, setDeleteId] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteErr, setDeleteErr] = useState(null);
 
   const columns = useMemo(
     () => [
@@ -523,10 +588,7 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
     []
   );
 
-  const submissionIds = useMemo(
-    () => (Array.isArray(rows) ? rows.map((r) => r?.id).filter(Boolean) : []),
-    [rows]
-  );
+  const submissionIds = useMemo(() => (Array.isArray(rows) ? rows.map((r) => r?.id).filter(Boolean) : []), [rows]);
 
   async function loadForms() {
     setFormsLoading(true);
@@ -538,12 +600,11 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
         credentials: "same-origin",
       });
 
-      const ct = res.headers.get("content-type") || "";
-      const payload = ct.includes("application/json") ? await res.json() : { message: await res.text() };
+      const payload = await readPayload(res);
       if (!res.ok) throw new Error(payload?.message || "Failed to load forms");
 
       const list = normalizeFormsList(payload);
-      list.sort((a, b) => asFormLabel(a).localeCompare(asFormLabel(b)));
+      list.sort((a, b) => formatFormLabelWithYear(a).localeCompare(formatFormLabelWithYear(b)));
 
       setForms(list);
 
@@ -591,15 +652,14 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
       if (status) params.set("status", status);
       if (source) params.set("source", source);
       if (year) params.set("year", String(year));
-      params.set("per_page", "50"); // summary needs enough rows
+      params.set("per_page", "50");
 
       const res = await fetch(`/api/admin/submissions?${params.toString()}`, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
       });
 
-      const ct = res.headers.get("content-type") || "";
-      const payload = ct.includes("application/json") ? await res.json() : { message: await res.text() };
+      const payload = await readPayload(res);
       if (!res.ok) throw new Error(payload?.message || "Failed to load submissions");
 
       const list = extractRows(payload);
@@ -609,16 +669,41 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
         created_at: formatDate(r.created_at),
         submitted_at: formatDate(r.submitted_at),
         __actions: (
-          <button
-            type="button"
-            className="text-indigo-600 hover:underline text-sm"
-            onClick={() => {
-              setActiveSubmissionId(r.id);
-              setViewerOpen(true);
-            }}
-          >
-            View
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              className="text-indigo-600 hover:underline text-sm"
+              onClick={() => {
+                setActiveSubmissionId(r.id);
+                setViewerOpen(true);
+              }}
+            >
+              View
+            </button>
+
+            <button
+              type="button"
+              className="text-amber-700 hover:underline text-sm"
+              onClick={() => {
+                setEditId(r.id);
+                setEditOpen(true);
+              }}
+            >
+              Edit
+            </button>
+
+            <button
+              type="button"
+              className="text-red-700 hover:underline text-sm"
+              onClick={() => {
+                setDeleteErr(null);
+                setDeleteId(r.id);
+                setDeleteOpen(true);
+              }}
+            >
+              Delete
+            </button>
+          </div>
         ),
       }));
 
@@ -631,9 +716,46 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
     }
   }
 
-  useEffect(() => { loadForms(); /* eslint-disable-next-line */ }, []);
-  useEffect(() => { loadForms(); /* eslint-disable-next-line */ }, [refreshKey]);
-  useEffect(() => { loadSubmissions(); /* eslint-disable-next-line */ }, [activeForm?.id, status, source, year, refreshKey]);
+  async function confirmDelete() {
+    if (!deleteId) return;
+
+    setDeleteBusy(true);
+    setDeleteErr(null);
+
+    try {
+      const res = await fetch(`/api/admin/submissions/${deleteId}`, {
+        method: "DELETE",
+        headers: apiHeaders({ json: false }),
+        credentials: "same-origin",
+      });
+
+      const payload = await readPayload(res);
+      if (!res.ok) throw new Error(payload?.message || `Failed to delete submission (${res.status})`);
+
+      setDeleteOpen(false);
+      setDeleteId(null);
+
+      // Refresh list (and keep UI consistent)
+      await loadSubmissions();
+    } catch (e) {
+      setDeleteErr(e?.message || "Failed to delete");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    loadForms();
+    // eslint-disable-next-line
+  }, []);
+  useEffect(() => {
+    loadForms();
+    // eslint-disable-next-line
+  }, [refreshKey]);
+  useEffect(() => {
+    loadSubmissions();
+    // eslint-disable-next-line
+  }, [activeForm?.id, status, source, year, refreshKey]);
 
   return (
     <>
@@ -646,6 +768,55 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
           setActiveSubmissionId(null);
         }}
       />
+
+      <EditSubmissionModal
+        open={editOpen}
+        submissionId={editId}
+        onClose={() => {
+          setEditOpen(false);
+          setEditId(null);
+        }}
+        onSavedOrSubmitted={() => {
+          loadSubmissions();
+        }}
+      />
+
+      {/* DELETE MODAL (simple, no extra dependencies) */}
+      {deleteOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => (deleteBusy ? null : setDeleteOpen(false))} />
+          <div className="relative w-full max-w-md rounded-lg bg-white shadow-lg border">
+            <div className="p-4 border-b">
+              <div className="text-base font-semibold text-gray-900">Delete submission?</div>
+              <div className="text-sm text-gray-600">This will permanently delete Submission #{deleteId}.</div>
+            </div>
+
+            <div className="p-4 space-y-3">
+              {deleteErr ? <div className="text-sm text-red-600">{deleteErr}</div> : null}
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  className="border rounded px-4 py-2 text-sm hover:bg-gray-50 disabled:opacity-60"
+                  disabled={deleteBusy}
+                  onClick={() => setDeleteOpen(false)}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  className="bg-red-600 text-white rounded px-4 py-2 text-sm disabled:opacity-60"
+                  disabled={deleteBusy}
+                  onClick={confirmDelete}
+                >
+                  {deleteBusy ? "Deleting…" : "Delete"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div className="lg:col-span-4">
@@ -666,7 +837,7 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
             <div className="p-4 border-b border-gray-200 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
               <div>
                 <div className="text-base font-semibold text-gray-900">
-                  {activeForm?.id ? <span>{asFormLabel(activeForm)}</span> : "Select a form"}
+                  {activeForm?.id ? <span>{formatFormLabelWithYear(activeForm)}</span> : "Select a form"}
                 </div>
                 <div className="text-sm text-gray-600">
                   {activeTab === "summary" ? "Summary of responses" : "Submissions list"}
