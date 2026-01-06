@@ -3,18 +3,24 @@ import React, { useEffect, useMemo, useState } from "react";
 import FormPicker from "./FormPicker";
 import FormRendererFromMapping from "./FormRendererFromMapping";
 
+// Location reference data (static JSON)
+import barangaysJson from "../../Map/laguna_barangays_list.json";
+import municitiesJson from "../../Map/laguna_municities_list.json";
+
 /**
- * CHANGE SUMMARY (as requested)
- * - No more "Year" input.
- * - Admin just selects a form.
- * - We auto-pick the active schema version from the form row.
- * - We derive the year label from schema version (if available) and display it like: "(2023)".
- * - When creating/updating submission, we send `year` derived from schema version (fallback: currentYear).
+ * UPDATED TO SUPPORT SUBMISSION LOCATION COLUMNS:
+ * - Adds required location selection UI (Region/Province/City/Barangay)
+ * - Persists to submissions table fields:
+ *   reg_name, prov_name, city_name, brgy_name
+ * - Sends location during:
+ *   - create submission (POST /api/admin/submissions)
+ *   - save answers (PATCH /api/admin/submissions/{id}/answers) alongside answers payload
+ *   - submit uses the same (mode=submit) then POST /submit
+ * - Prefills location when editing an existing submission
  *
  * Notes:
- * - This assumes your /api/admin/forms?active=all returns form rows with `schema_versions` that includes:
- *   - status: "active"
- *   - (optional) year OR effective_year OR schema_year (we handle multiple keys)
+ * - JSON lists are used only for UI options.
+ * - Backend enforces required location on submit (per your controller).
  */
 
 function pickActiveSchema(schemaVersions = []) {
@@ -148,6 +154,15 @@ function compactYearBadge(year) {
   return `(${year})`;
 }
 
+function uniqSorted(arr) {
+  return Array.from(new Set((arr || []).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function normalizeRows(jsonObj) {
+  const rows = jsonObj?.rows ?? jsonObj?.data?.rows ?? jsonObj?.data ?? [];
+  return Array.isArray(rows) ? rows : [];
+}
+
 export default function SubmissionWizardBase({
   mode = "create", // "create" | "edit"
   initialSubmissionId = null,
@@ -177,6 +192,92 @@ export default function SubmissionWizardBase({
   const [activeSchema, setActiveSchema] = useState(null);
   const schemaYear = useMemo(() => deriveSchemaYear(activeSchema), [activeSchema]);
   const effectiveYearToSend = schemaYear ?? currentYear;
+
+  // ----- LOCATION STATE (added) -----
+  const munRows = useMemo(() => normalizeRows(municitiesJson), []);
+  const brgyRows = useMemo(() => normalizeRows(barangaysJson), []);
+
+  const [regName, setRegName] = useState("");
+  const [provName, setProvName] = useState("Laguna"); // fixed in your lists
+  const [cityName, setCityName] = useState("");
+  const [brgyName, setBrgyName] = useState("");
+
+  const regionOptions = useMemo(() => {
+    const regs = munRows.map((r) => r?.reg_name).filter(Boolean);
+    return uniqSorted(regs);
+  }, [munRows]);
+
+  const provinceOptions = useMemo(() => {
+    // From municity list (only Laguna) but keep generic
+    const provs = munRows.map((r) => r?.prov_name).filter(Boolean);
+    return uniqSorted(provs);
+  }, [munRows]);
+
+  const cityOptions = useMemo(() => {
+    const rows = munRows.filter((r) => {
+      const okProv = !provName ? true : String(r?.prov_name) === String(provName);
+      const okReg = !regName ? true : String(r?.reg_name) === String(regName);
+      return okProv && okReg;
+    });
+    return uniqSorted(rows.map((r) => r?.city_name).filter(Boolean));
+  }, [munRows, regName, provName]);
+
+  const barangayOptions = useMemo(() => {
+    if (!provName || !cityName) return [];
+    const rows = brgyRows.filter(
+      (r) => String(r?.prov_name) === String(provName) && String(r?.city_name) === String(cityName)
+    );
+    return uniqSorted(rows.map((r) => r?.brgy_name).filter(Boolean));
+  }, [brgyRows, provName, cityName]);
+
+  // Reset dependent dropdowns when parent changes
+  useEffect(() => {
+    // when reg changes, reset city/brgy
+    setCityName("");
+    setBrgyName("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regName]);
+
+  useEffect(() => {
+    // when prov changes, reset city/brgy
+    setCityName("");
+    setBrgyName("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provName]);
+
+  useEffect(() => {
+    // when city changes, reset brgy
+    setBrgyName("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cityName]);
+
+  // Default initial region/province if empty
+  useEffect(() => {
+    if (!regName && regionOptions.length === 1) setRegName(regionOptions[0]);
+    if (!provName && provinceOptions.length === 1) setProvName(provinceOptions[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regionOptions.length, provinceOptions.length]);
+
+  function locationPayload() {
+    return {
+      reg_name: regName || null,
+      prov_name: provName || null,
+      city_name: cityName || null,
+      brgy_name: brgyName || null,
+    };
+  }
+
+  function validateLocation({ strict = false } = {}) {
+    // strict=true is for submit
+    const missing = [];
+    if (!provName) missing.push("prov_name");
+    if (!cityName) missing.push("city_name");
+
+    // Your backend currently requires brgy_name on submit.
+    if (strict && !brgyName) missing.push("brgy_name");
+
+    return missing;
+  }
 
   async function loadFormRowById(formTypeId) {
     if (!formTypeId) return null;
@@ -250,7 +351,13 @@ export default function SubmissionWizardBase({
 
       setSubmission(sub);
 
-      // Load form row and schema (no year input)
+      // Prefill location from submission (added)
+      setRegName(sub?.reg_name ?? "");
+      setProvName(sub?.prov_name ?? "Laguna");
+      setCityName(sub?.city_name ?? "");
+      setBrgyName(sub?.brgy_name ?? "");
+
+      // Load form row and schema
       const formRow = await loadFormRowById(formTypeId);
       setSelectedForm(formRow);
       await loadSchemaForFormRow(formRow);
@@ -268,6 +375,10 @@ export default function SubmissionWizardBase({
       setFieldMeta({});
       setSchemaMapping({});
       setAnswers({});
+      setRegName("");
+      setProvName("Laguna");
+      setCityName("");
+      setBrgyName("");
     } finally {
       setInitialLoading(false);
     }
@@ -293,6 +404,13 @@ export default function SubmissionWizardBase({
       return;
     }
 
+    // Require location before creating (so respondent fills it first)
+    const missing = validateLocation({ strict: true });
+    if (missing.length) {
+      setErr(`Complete location first: ${missing.join(", ")}`);
+      return;
+    }
+
     setBusy(true);
     setErr(null);
     setMsg(null);
@@ -302,7 +420,11 @@ export default function SubmissionWizardBase({
         method: "POST",
         headers: apiHeaders({ json: true }),
         credentials: "same-origin",
-        body: JSON.stringify({ form_type_id: selectedForm.id, year: effectiveYearToSend }),
+        body: JSON.stringify({
+          form_type_id: selectedForm.id,
+          year: effectiveYearToSend,
+          ...locationPayload(),
+        }),
       });
 
       const payload = await readPayload(res);
@@ -325,10 +447,11 @@ export default function SubmissionWizardBase({
   async function patchSubmissionMetaIfNeeded() {
     if (!submission?.id) return;
 
-    // keep submission form/year in sync (year derived from selected form schema)
+    // Keep year/form in sync + persist location changes too (added)
     const body = {
       year: effectiveYearToSend,
       form_type_id: selectedForm?.id,
+      ...locationPayload(),
     };
 
     const res = await fetch(`/api/admin/submissions/${submission.id}`, {
@@ -362,7 +485,11 @@ export default function SubmissionWizardBase({
         method: "PATCH",
         headers: apiHeaders({ json: true }),
         credentials: "same-origin",
-        body: JSON.stringify({ answers, mode: "draft" }),
+        body: JSON.stringify({
+          answers,
+          mode: "draft",
+          ...locationPayload(), // save location alongside (added)
+        }),
       });
 
       const payload = await readPayload(res);
@@ -383,6 +510,13 @@ export default function SubmissionWizardBase({
       return;
     }
 
+    // Enforce location before submit
+    const missing = validateLocation({ strict: true });
+    if (missing.length) {
+      setErr(`Complete location first: ${missing.join(", ")}`);
+      return;
+    }
+
     setBusy(true);
     setErr(null);
     setMsg(null);
@@ -390,12 +524,16 @@ export default function SubmissionWizardBase({
     try {
       await patchSubmissionMetaIfNeeded();
 
-      // 1) save answers
+      // 1) save answers + location (mode=submit)
       const res1 = await fetch(`/api/admin/submissions/${submission.id}/answers`, {
         method: "PATCH",
         headers: apiHeaders({ json: true }),
         credentials: "same-origin",
-        body: JSON.stringify({ answers, mode: "submit" }),
+        body: JSON.stringify({
+          answers,
+          mode: "submit",
+          ...locationPayload(),
+        }),
       });
 
       const p1 = await readPayload(res1);
@@ -428,9 +566,7 @@ export default function SubmissionWizardBase({
       <div className="p-4 border-b border-gray-200">
         <div className="text-base font-semibold text-gray-900">{isEdit ? "Edit Submission" : "New Submission"}</div>
         <div className="text-sm text-gray-600">
-          {isEdit
-            ? "Load an existing submission and update mapped fields."
-            : "Select a form, create a submission, and fill out mapped fields."}
+          {isEdit ? "Load an existing submission and update mapped fields." : "Select a form, create a submission, and fill out mapped fields."}
         </div>
       </div>
 
@@ -447,7 +583,6 @@ export default function SubmissionWizardBase({
                 <label className="block text-xs text-gray-600">Form</label>
                 <div className="flex items-center gap-2">
                   <div className="flex-1">
-                    {/* FormPicker no longer needs year */}
                     <FormPicker value={selectedForm} onChange={setSelectedForm} />
                   </div>
 
@@ -463,6 +598,95 @@ export default function SubmissionWizardBase({
                 ) : selectedForm?.id ? (
                   <div className="mt-1 text-xs text-gray-500">Schema year not found on active schema version.</div>
                 ) : null}
+              </div>
+            </div>
+
+            {/* LOCATION UI (added) */}
+            <div className="border rounded-lg p-3 bg-gray-50">
+              <div className="text-sm font-semibold text-gray-900">Location</div>
+              <div className="mt-2 grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-600">
+                    Region <span className="text-red-600">*</span>
+                  </label>
+                  <select
+                    className="w-full border rounded px-3 py-2 text-sm bg-white"
+                    value={regName}
+                    onChange={(e) => setRegName(e.target.value)}
+                  >
+                    <option value="">Select region</option>
+                    {regionOptions.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-600">
+                    Province <span className="text-red-600">*</span>
+                  </label>
+                  <select
+                    className="w-full border rounded px-3 py-2 text-sm bg-white"
+                    value={provName}
+                    onChange={(e) => setProvName(e.target.value)}
+                  >
+                    <option value="">Select province</option>
+                    {provinceOptions.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-600">
+                    City/Municipality <span className="text-red-600">*</span>
+                  </label>
+                  <select
+                    className="w-full border rounded px-3 py-2 text-sm bg-white"
+                    value={cityName}
+                    onChange={(e) => setCityName(e.target.value)}
+                    disabled={!provName || !regName}
+                  >
+                    <option value="">{!provName || !regName ? "Select region & province first" : "Select city/municity"}</option>
+                    {cityOptions.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-600">
+                    Barangay <span className="text-red-600">*</span>
+                  </label>
+                  <select
+                    className="w-full border rounded px-3 py-2 text-sm bg-white"
+                    value={brgyName}
+                    onChange={(e) => setBrgyName(e.target.value)}
+                    disabled={!provName || !cityName}
+                  >
+                    <option value="">{!provName || !cityName ? "Select city first" : "Select barangay"}</option>
+                    {barangayOptions.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-2 text-xs text-gray-500">
+                Selected:{" "}
+                <span className="font-medium text-gray-700">
+                  {provName || "—"}
+                  {cityName ? `, ${cityName}` : ""}
+                  {brgyName ? `, ${brgyName}` : ""}
+                </span>
               </div>
             </div>
 

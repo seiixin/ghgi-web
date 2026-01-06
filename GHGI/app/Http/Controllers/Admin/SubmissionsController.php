@@ -14,7 +14,6 @@ class SubmissionsController extends ApiController
     public function index(Request $request)
     {
         $q = Submission::query()
-            // ✅ don't select non-existing columns
             ->with(['formType'])
             ->withCount('answers')
             ->orderByDesc('id');
@@ -32,9 +31,22 @@ class SubmissionsController extends ApiController
             $q->where('source', $request->source);
         }
 
+        // Optional location filters (added)
+        if ($request->filled('reg_name')) {
+            $q->where('reg_name', $request->reg_name);
+        }
+        if ($request->filled('prov_name')) {
+            $q->where('prov_name', $request->prov_name);
+        }
+        if ($request->filled('city_name')) {
+            $q->where('city_name', $request->city_name);
+        }
+        if ($request->filled('brgy_name')) {
+            $q->where('brgy_name', $request->brgy_name);
+        }
+
         $rows = $q->paginate((int) ($request->get('per_page', 20)));
 
-        // add stable display field
         $rows->getCollection()->transform(function ($s) {
             $s->form_type_name = $s->formType->name ?? $s->form_type_name ?? null;
             return $s;
@@ -53,6 +65,12 @@ class SubmissionsController extends ApiController
             'mapping_id' => ['nullable', 'integer', 'min:1'],
             'schema_version_id' => ['nullable', 'integer', 'min:1'],
             'source' => ['nullable', 'string', 'max:20'],
+
+            // Location fields (added; optional on create/draft)
+            'reg_name' => ['nullable', 'string', 'max:120'],
+            'prov_name' => ['nullable', 'string', 'max:120'],
+            'city_name' => ['nullable', 'string', 'max:120'],
+            'brgy_name' => ['nullable', 'string', 'max:120'],
         ]);
 
         $mapping = null;
@@ -67,43 +85,29 @@ class SubmissionsController extends ApiController
                 ->first();
         }
 
-        // schema-driven UI: allow create even without mapping
-        if (!$mapping) {
-            $submission = Submission::query()->create([
-                'form_type_id' => $data['form_type_id'],
-                'schema_version_id' => $data['schema_version_id'] ?? null,
-                'mapping_id' => null,
-                'year' => $data['year'],
-                'source' => $data['source'] ?? 'admin',
-                'status' => 'draft',
-                'created_by' => $user->id,
-            ]);
-
-            $submission->loadMissing(['formType']);
-            $submission->form_type_name = $submission->formType->name ?? null;
-
-            return $this->ok([
-                'submission' => $submission,
-                'mapping_json' => (object) [],
-            ], 'Created', 201);
-        }
-
-        $submission = Submission::query()->create([
+        $payload = [
             'form_type_id' => $data['form_type_id'],
             'schema_version_id' => $data['schema_version_id'] ?? null,
-            'mapping_id' => $mapping->id,
+            'mapping_id' => $mapping?->id,
             'year' => $data['year'],
             'source' => $data['source'] ?? 'admin',
             'status' => 'draft',
             'created_by' => $user->id,
-        ]);
 
+            // Location (saved to submissions table)
+            'reg_name' => $data['reg_name'] ?? null,
+            'prov_name' => $data['prov_name'] ?? null,
+            'city_name' => $data['city_name'] ?? null,
+            'brgy_name' => $data['brgy_name'] ?? null,
+        ];
+
+        $submission = Submission::query()->create($payload);
         $submission->loadMissing(['formType']);
         $submission->form_type_name = $submission->formType->name ?? null;
 
         return $this->ok([
             'submission' => $submission,
-            'mapping_json' => $mapping->mapping_json,
+            'mapping_json' => $mapping?->mapping_json ?? (object) [],
         ], 'Created', 201);
     }
 
@@ -166,6 +170,12 @@ class SubmissionsController extends ApiController
         $data = $request->validate([
             'status' => ['nullable', 'string', 'max:20'],
             'source' => ['nullable', 'string', 'max:20'],
+
+            // Location updates (added)
+            'reg_name' => ['nullable', 'string', 'max:120'],
+            'prov_name' => ['nullable', 'string', 'max:120'],
+            'city_name' => ['nullable', 'string', 'max:120'],
+            'brgy_name' => ['nullable', 'string', 'max:120'],
         ]);
 
         if (isset($data['status']) && $data['status'] !== $submission->status) {
@@ -198,7 +208,26 @@ class SubmissionsController extends ApiController
             'answers' => ['required', 'array'],
             'snapshots' => ['nullable', 'array'],
             'mode' => ['nullable', 'string', 'in:draft,submit'],
+
+            // Allow location to be sent alongside answers (added)
+            'reg_name' => ['nullable', 'string', 'max:120'],
+            'prov_name' => ['nullable', 'string', 'max:120'],
+            'city_name' => ['nullable', 'string', 'max:120'],
+            'brgy_name' => ['nullable', 'string', 'max:120'],
         ]);
+
+        // If location was included, save it on the submission (draft save allowed)
+        $locFields = ['reg_name', 'prov_name', 'city_name', 'brgy_name'];
+        $locDirty = false;
+        foreach ($locFields as $f) {
+            if (array_key_exists($f, $payload)) {
+                $submission->{$f} = $payload[$f];
+                $locDirty = true;
+            }
+        }
+        if ($locDirty) {
+            $submission->save();
+        }
 
         $answers = $payload['answers'] ?? [];
         $snapshots = $payload['snapshots'] ?? [];
@@ -275,6 +304,21 @@ class SubmissionsController extends ApiController
             $updated++;
         }
 
+        // If caller says mode=submit, validate location is present (added)
+        if (($payload['mode'] ?? null) === 'submit') {
+            $missing = [];
+            if (empty($submission->prov_name)) $missing[] = 'prov_name';
+            if (empty($submission->city_name)) $missing[] = 'city_name';
+            // brgy can be optional depending on your rule; here we require it if provided in payload OR already set as required in UI
+            if (empty($submission->brgy_name)) $missing[] = 'brgy_name';
+
+            if (!empty($missing)) {
+                return $this->fail('Location is required before submit.', [
+                    'missing' => $missing,
+                ], 422);
+            }
+        }
+
         return $this->ok([
             'updated' => $updated,
             'rejected' => $rejected,
@@ -285,6 +329,18 @@ class SubmissionsController extends ApiController
     {
         if ($submission->status === 'submitted') {
             return $this->ok($submission, 'Already submitted');
+        }
+
+        // Enforce required location on submit (added)
+        $missing = [];
+        if (empty($submission->prov_name)) $missing[] = 'prov_name';
+        if (empty($submission->city_name)) $missing[] = 'city_name';
+        if (empty($submission->brgy_name)) $missing[] = 'brgy_name';
+
+        if (!empty($missing)) {
+            return $this->fail('Location is required before submit.', [
+                'missing' => $missing,
+            ], 422);
         }
 
         $submission->status = 'submitted';

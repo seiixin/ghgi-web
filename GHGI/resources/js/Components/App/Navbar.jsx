@@ -56,12 +56,9 @@ export default function Navbar({ appName = "Laguna Inventory", user }) {
   const isAdmin = role === "ADMIN";
 
   const adminMenu = [
-    { href: "/admin/lgus", label: "LGU Masters" },
     { href: "/admin/management/forms", label: "Forms" },
     { href: "/admin/management/quantification-settings", label: "Quantification Settings" },
-    { href: "/admin/management/emission-settings", label: "Emission Settings" },
     { href: "/admin/management/staff", label: "Staff Management" },
-    { href: "/admin/management/layers", label: "Layers Settings" },
   ];
 
   return (

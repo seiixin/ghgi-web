@@ -145,6 +145,18 @@ function prettifyAny(value) {
   return String(value);
 }
 
+function formatLocationInline(r) {
+  const prov = (r?.prov_name ?? "").trim();
+  const city = (r?.city_name ?? "").trim();
+  const brgy = (r?.brgy_name ?? "").trim();
+  const parts = [prov, city, brgy].filter(Boolean);
+  return parts.length ? parts.join(", ") : "-";
+}
+
+function safeStr(x) {
+  return String(x ?? "").trim();
+}
+
 // ------------------ Simple SVG Pie ------------------
 function hslColor(i, total) {
   const hue = Math.round((i * 360) / Math.max(1, total));
@@ -259,6 +271,13 @@ function Tabs({ active, onChange }) {
   );
 }
 
+/**
+ * UPDATED:
+ * - Summary matrix adds columns for reg_name/prov_name/city_name/brgy_name
+ * - Pie charts include:
+ *   - existing select/radio/checkbox/boolean fields from schema answers
+ *   - PLUS location pies for Province / City / Barangay (from submission table columns)
+ */
 function SummaryTab({ activeForm, schemaFields, status, source, year, submissionRows }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
@@ -349,6 +368,12 @@ function SummaryTab({ activeForm, schemaFields, status, source, year, submission
       { key: "status", label: "Status" },
       { key: "source", label: "Source" },
       { key: "submitted_at", label: "Submitted" },
+
+      // ADDED: location columns from submissions table
+      { key: "reg_name", label: "Region" },
+      { key: "prov_name", label: "Province" },
+      { key: "city_name", label: "City/Municipality" },
+      { key: "brgy_name", label: "Barangay" },
     ];
 
     const dynamic = (Array.isArray(schemaFields) ? schemaFields : [])
@@ -368,6 +393,12 @@ function SummaryTab({ activeForm, schemaFields, status, source, year, submission
         status: r?.status ?? "",
         source: r?.source ?? "",
         submitted_at: formatDate(r?.submitted_at) || "",
+
+        // ADDED: location cells
+        reg_name: safeStr(r?.reg_name),
+        prov_name: safeStr(r?.prov_name),
+        city_name: safeStr(r?.city_name),
+        brgy_name: safeStr(r?.brgy_name),
       };
 
       for (const f of Array.isArray(schemaFields) ? schemaFields : []) {
@@ -383,6 +414,16 @@ function SummaryTab({ activeForm, schemaFields, status, source, year, submission
     const list = Array.isArray(submissionRows) ? submissionRows : [];
     if (!list.length) return piesOut;
 
+    // A) LOCATION pies (from submission table columns)
+    const provVals = list.map((r) => safeStr(r?.prov_name)).filter(Boolean);
+    const cityVals = list.map((r) => safeStr(r?.city_name)).filter(Boolean);
+    const brgyVals = list.map((r) => safeStr(r?.brgy_name)).filter(Boolean);
+
+    if (provVals.length) piesOut.push({ fieldKey: "__prov_name", label: "Province", data: buildDistribution(provVals, 8) });
+    if (cityVals.length) piesOut.push({ fieldKey: "__city_name", label: "City/Municipality", data: buildDistribution(cityVals, 8) });
+    if (brgyVals.length) piesOut.push({ fieldKey: "__brgy_name", label: "Barangay", data: buildDistribution(brgyVals, 8) });
+
+    // B) ANSWER pies (select/radio/checkbox/boolean fields from schema)
     for (const f of Array.isArray(schemaFields) ? schemaFields : []) {
       if (!f?.key) continue;
       const type = String(f.type || "").toLowerCase();
@@ -433,14 +474,14 @@ function SummaryTab({ activeForm, schemaFields, status, source, year, submission
                   {pies.map((p) => (
                     <div key={p.fieldKey} className="border rounded-lg p-3 bg-white">
                       <div className="text-sm font-semibold text-gray-900">{p.label}</div>
-                      <div className="text-xs text-gray-500 mb-2">{p.fieldKey}</div>
+                      <div className="text-xs text-gray-500 mb-2">{p.fieldKey.startsWith("__") ? "Location" : p.fieldKey}</div>
                       <PieChart data={p.data} />
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="border rounded-lg p-3 bg-gray-50 text-sm text-gray-600">
-                  No pie charts available for this form on this page (pie charts are shown for select/radio/checkbox/boolean fields).
+                  No pie charts available for this form on this page.
                 </div>
               )}
 
@@ -450,7 +491,7 @@ function SummaryTab({ activeForm, schemaFields, status, source, year, submission
                   <div className="text-xs text-gray-500">Rows = submissions on this page • Columns = fields</div>
                 </div>
                 <div className="p-3 overflow-auto">
-                  <div className="min-w-[920px]">
+                  <div className="min-w-[1180px]">
                     <DataTable columns={matrixColumns} rows={matrixRows} />
                   </div>
                 </div>
@@ -557,6 +598,11 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
   const [source, setSource] = useState("");
   const [year, setYear] = useState(""); // optional filter
 
+  // OPTIONAL: location filters (client-side query params if backend supports)
+  const [provFilter, setProvFilter] = useState("");
+  const [cityFilter, setCityFilter] = useState("");
+  const [brgyFilter, setBrgyFilter] = useState("");
+
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -578,6 +624,12 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
   const columns = useMemo(
     () => [
       { key: "id", label: "ID" },
+
+      // ADDED: location columns in submissions table view
+      { key: "prov_name", label: "Province" },
+      { key: "city_name", label: "City/Mun" },
+      { key: "brgy_name", label: "Barangay" },
+
       { key: "year", label: "Year" },
       { key: "source", label: "Source" },
       { key: "status", label: "Status" },
@@ -652,6 +704,12 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
       if (status) params.set("status", status);
       if (source) params.set("source", source);
       if (year) params.set("year", String(year));
+
+      // If your backend later supports these, it will work automatically.
+      if (provFilter) params.set("prov_name", provFilter);
+      if (cityFilter) params.set("city_name", cityFilter);
+      if (brgyFilter) params.set("brgy_name", brgyFilter);
+
       params.set("per_page", "50");
 
       const res = await fetch(`/api/admin/submissions?${params.toString()}`, {
@@ -666,6 +724,11 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
 
       const normalized = (Array.isArray(list) ? list : []).map((r) => ({
         ...r,
+        // keep location columns raw (strings)
+        prov_name: safeStr(r?.prov_name),
+        city_name: safeStr(r?.city_name),
+        brgy_name: safeStr(r?.brgy_name),
+
         created_at: formatDate(r.created_at),
         submitted_at: formatDate(r.submitted_at),
         __actions: (
@@ -735,7 +798,6 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
       setDeleteOpen(false);
       setDeleteId(null);
 
-      // Refresh list (and keep UI consistent)
       await loadSubmissions();
     } catch (e) {
       setDeleteErr(e?.message || "Failed to delete");
@@ -755,7 +817,7 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
   useEffect(() => {
     loadSubmissions();
     // eslint-disable-next-line
-  }, [activeForm?.id, status, source, year, refreshKey]);
+  }, [activeForm?.id, status, source, year, provFilter, cityFilter, brgyFilter, refreshKey]);
 
   return (
     <>
@@ -781,7 +843,7 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
         }}
       />
 
-      {/* DELETE MODAL (simple, no extra dependencies) */}
+      {/* DELETE MODAL */}
       {deleteOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40" onClick={() => (deleteBusy ? null : setDeleteOpen(false))} />
@@ -839,9 +901,7 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
                 <div className="text-base font-semibold text-gray-900">
                   {activeForm?.id ? <span>{formatFormLabelWithYear(activeForm)}</span> : "Select a form"}
                 </div>
-                <div className="text-sm text-gray-600">
-                  {activeTab === "summary" ? "Summary of responses" : "Submissions list"}
-                </div>
+                <div className="text-sm text-gray-600">{activeTab === "summary" ? "Summary of responses" : "Submissions list"}</div>
               </div>
 
               <div className="flex flex-wrap gap-2">
@@ -876,6 +936,37 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
                   </select>
                 </div>
 
+                {/* OPTIONAL: location filters (works if backend supports; harmless otherwise) */}
+                <div>
+                  <label className="block text-xs text-gray-600">Province</label>
+                  <input
+                    className="border rounded px-2 py-1 text-sm w-36"
+                    value={provFilter}
+                    onChange={(e) => setProvFilter(e.target.value)}
+                    placeholder="All"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-600">City/Mun</label>
+                  <input
+                    className="border rounded px-2 py-1 text-sm w-36"
+                    value={cityFilter}
+                    onChange={(e) => setCityFilter(e.target.value)}
+                    placeholder="All"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-gray-600">Barangay</label>
+                  <input
+                    className="border rounded px-2 py-1 text-sm w-36"
+                    value={brgyFilter}
+                    onChange={(e) => setBrgyFilter(e.target.value)}
+                    placeholder="All"
+                  />
+                </div>
+
                 <button
                   type="button"
                   className="border rounded px-3 py-2 text-sm hover:bg-gray-50"
@@ -890,14 +981,7 @@ export default function SubmissionsTable({ refreshKey = 0 }) {
             <Tabs active={activeTab} onChange={setActiveTab} />
 
             {activeTab === "summary" ? (
-              <SummaryTab
-                activeForm={activeForm}
-                schemaFields={schemaFields}
-                status={status}
-                source={source}
-                year={year}
-                submissionRows={rows}
-              />
+              <SummaryTab activeForm={activeForm} schemaFields={schemaFields} status={status} source={source} year={year} submissionRows={rows} />
             ) : (
               <div className="p-4">
                 {error ? <div className="mb-3 text-sm text-red-600">{error}</div> : null}

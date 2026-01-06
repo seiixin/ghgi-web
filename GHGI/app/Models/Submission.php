@@ -3,8 +3,8 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Submission extends Model
 {
@@ -15,6 +15,13 @@ class Submission extends Model
         'year',
         'source',
         'status',
+
+        // Location (added)
+        'reg_name',
+        'prov_name',
+        'city_name',
+        'brgy_name',
+
         'created_by',
         'submitted_at',
     ];
@@ -34,9 +41,8 @@ class Submission extends Model
         return $this->belongsTo(User::class, 'created_by');
     }
 
-    public function formType()
+    public function formType(): BelongsTo
     {
         return $this->belongsTo(\App\Models\FormType::class, 'form_type_id');
     }
-
 }

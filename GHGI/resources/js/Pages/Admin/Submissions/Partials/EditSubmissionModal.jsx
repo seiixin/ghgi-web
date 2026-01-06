@@ -3,6 +3,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import FormPicker from "./FormPicker";
 import FormRendererFromMapping from "./FormRendererFromMapping";
 
+// Location reference data (static JSON)
+import barangaysJson from "../../Map/laguna_barangays_list.json";
+import municitiesJson from "../../Map/laguna_municities_list.json";
+
 function pickActiveSchema(schemaVersions = []) {
   const active = (schemaVersions || []).find((v) => v.status === "active");
   return active || (schemaVersions || [])[0] || null;
@@ -132,9 +136,32 @@ function ModalShell({ open, title, onClose, children }) {
   );
 }
 
+function uniqSorted(arr) {
+  return Array.from(new Set((arr || []).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function normalizeRows(jsonObj) {
+  const rows = jsonObj?.rows ?? jsonObj?.data?.rows ?? jsonObj?.data ?? [];
+  return Array.isArray(rows) ? rows : [];
+}
+
+function deriveSchemaYear(activeSchema) {
+  if (!activeSchema) return null;
+
+  const y =
+    activeSchema?.year ??
+    activeSchema?.effective_year ??
+    activeSchema?.schema_year ??
+    activeSchema?.schemaYear ??
+    null;
+
+  const n = Number(y);
+  if (!Number.isFinite(n) || n <= 1900) return null;
+  return n;
+}
+
 export default function EditSubmissionModal({ open, submissionId, onClose, onSavedOrSubmitted }) {
   const currentYear = useMemo(() => new Date().getFullYear(), []);
-  const [year, setYear] = useState(currentYear);
   const [selectedForm, setSelectedForm] = useState(null);
   const [submission, setSubmission] = useState(null);
 
@@ -149,33 +176,113 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
 
-  async function loadSchemaForSelectedForm(formTypeId, y, { alsoReturnFormRow = false } = {}) {
+  // Active schema (for derived year only; no year input)
+  const [activeSchema, setActiveSchema] = useState(null);
+  const schemaYear = useMemo(() => deriveSchemaYear(activeSchema), [activeSchema]);
+  const effectiveYearToSend = schemaYear ?? (submission?.year ?? currentYear);
+
+  // ----- LOCATION STATE (added) -----
+  const munRows = useMemo(() => normalizeRows(municitiesJson), []);
+  const brgyRows = useMemo(() => normalizeRows(barangaysJson), []);
+
+  const regionOptions = useMemo(() => uniqSorted(munRows.map((r) => r?.reg_name).filter(Boolean)), [munRows]);
+  const provinceOptions = useMemo(() => uniqSorted(munRows.map((r) => r?.prov_name).filter(Boolean)), [munRows]);
+
+  const [regName, setRegName] = useState("");
+  const [provName, setProvName] = useState("Laguna");
+  const [cityName, setCityName] = useState("");
+  const [brgyName, setBrgyName] = useState("");
+
+  const cityOptions = useMemo(() => {
+    const rows = munRows.filter((r) => {
+      const okProv = !provName ? true : String(r?.prov_name) === String(provName);
+      const okReg = !regName ? true : String(r?.reg_name) === String(regName);
+      return okProv && okReg;
+    });
+    return uniqSorted(rows.map((r) => r?.city_name).filter(Boolean));
+  }, [munRows, regName, provName]);
+
+  const barangayOptions = useMemo(() => {
+    if (!provName || !cityName) return [];
+    const rows = brgyRows.filter(
+      (r) => String(r?.prov_name) === String(provName) && String(r?.city_name) === String(cityName)
+    );
+    return uniqSorted(rows.map((r) => r?.brgy_name).filter(Boolean));
+  }, [brgyRows, provName, cityName]);
+
+  useEffect(() => {
+    setCityName("");
+    setBrgyName("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regName]);
+
+  useEffect(() => {
+    setCityName("");
+    setBrgyName("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provName]);
+
+  useEffect(() => {
+    setBrgyName("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cityName]);
+
+  useEffect(() => {
+    if (!regName && regionOptions.length === 1) setRegName(regionOptions[0]);
+    if (!provName && provinceOptions.length === 1) setProvName(provinceOptions[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regionOptions.length, provinceOptions.length]);
+
+  function locationPayload() {
+    return {
+      reg_name: regName || null,
+      prov_name: provName || null,
+      city_name: cityName || null,
+      brgy_name: brgyName || null,
+    };
+  }
+
+  function validateLocation({ strict = false } = {}) {
+    const missing = [];
+    if (!provName) missing.push("prov_name");
+    if (!cityName) missing.push("city_name");
+    if (strict && !brgyName) missing.push("brgy_name"); // backend currently requires on submit
+    return missing;
+  }
+
+  async function loadFormRowById(formTypeId) {
     if (!formTypeId) return null;
+
+    const res = await fetch(`/api/admin/forms?active=all`, {
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+    });
+
+    const payload = await readPayload(res);
+    if (!res.ok) throw new Error(payload?.message || `Failed to load forms (${res.status})`);
+
+    const forms = normalizeFormsList(payload);
+    const row = forms.find((x) => String(x.id) === String(formTypeId));
+    if (!row) throw new Error("Form not found");
+    return row;
+  }
+
+  async function loadSchemaForFormRow(formRow) {
+    if (!formRow?.id) return;
 
     setSchemaLoading(true);
     setErr(null);
 
     try {
-      const res = await fetch(`/api/admin/forms?year=${encodeURIComponent(String(y))}&active=all`, {
-        headers: { Accept: "application/json" },
-        credentials: "same-origin",
-      });
+      const { fields, activeSchema: act } = schemaFieldsFromFormRow(formRow);
+      if (!fields.length) throw new Error("This form has no schema fields for the active version.");
 
-      const payload = await readPayload(res);
-      if (!res.ok) throw new Error(payload?.message || `Failed to load forms (${res.status})`);
-
-      const forms = normalizeFormsList(payload);
-      const row = forms.find((x) => String(x.id) === String(formTypeId));
-      if (!row) throw new Error("Form not found");
-
-      const { fields } = schemaFieldsFromFormRow(row);
-      if (!fields.length) throw new Error("This form has no schema fields for the selected year.");
-
+      setActiveSchema(act || null);
       setFieldMeta(toFieldMetaFromSchemaFields(fields));
       setSchemaMapping(mappingFromSchemaFields(fields));
-
-      return alsoReturnFormRow ? row : null;
+      return formRow;
     } catch (e) {
+      setActiveSchema(null);
       setFieldMeta({});
       setSchemaMapping({});
       setErr(e?.message || "Failed to load schema fields");
@@ -205,14 +312,20 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
       if (!sub?.id) throw new Error("No submission found.");
 
       const formTypeId = sub?.form_type_id ?? sub?.formTypeId ?? sub?.form_type?.id ?? sub?.formType?.id;
-      const y = sub?.year ?? currentYear;
       if (!formTypeId) throw new Error("Submission missing form_type_id.");
 
       setSubmission(sub);
-      setYear(Number(y));
 
-      const formRow = await loadSchemaForSelectedForm(formTypeId, Number(y), { alsoReturnFormRow: true });
+      // Prefill location from submission (added)
+      setRegName(sub?.reg_name ?? "");
+      setProvName(sub?.prov_name ?? "Laguna");
+      setCityName(sub?.city_name ?? "");
+      setBrgyName(sub?.brgy_name ?? "");
+
+      // Load form row and schema (no year filter)
+      const formRow = await loadFormRowById(formTypeId);
       setSelectedForm(formRow || { id: formTypeId });
+      if (formRow) await loadSchemaForFormRow(formRow);
 
       const ansMap = buildAnswersMapFromPayload(payload);
       setAnswers(ansMap || {});
@@ -222,9 +335,14 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
       setErr(e?.message || "Failed to load submission");
       setSubmission(null);
       setSelectedForm(null);
+      setActiveSchema(null);
       setFieldMeta({});
       setSchemaMapping({});
       setAnswers({});
+      setRegName("");
+      setProvName("Laguna");
+      setCityName("");
+      setBrgyName("");
     } finally {
       setInitialLoading(false);
     }
@@ -235,20 +353,20 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, submissionId]);
 
-  // if user changes form/year inside edit, reload schema
   useEffect(() => {
     if (!open) return;
     if (!selectedForm?.id) return;
-    loadSchemaForSelectedForm(selectedForm.id, year);
+    loadSchemaForFormRow(selectedForm);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedForm?.id, year, open]);
+  }, [selectedForm?.id, open]);
 
   async function patchSubmissionMetaIfNeeded() {
     if (!submission?.id) return;
 
     const body = {
-      year,
+      year: effectiveYearToSend,
       form_type_id: selectedForm?.id,
+      ...locationPayload(),
     };
 
     const res = await fetch(`/api/admin/submissions/${submission.id}`, {
@@ -279,7 +397,11 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
         method: "PATCH",
         headers: apiHeaders({ json: true }),
         credentials: "same-origin",
-        body: JSON.stringify({ answers, mode: "draft" }),
+        body: JSON.stringify({
+          answers,
+          mode: "draft",
+          ...locationPayload(),
+        }),
       });
 
       const payload = await readPayload(res);
@@ -297,6 +419,12 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
   async function submit() {
     if (!submission?.id) return;
 
+    const missing = validateLocation({ strict: true });
+    if (missing.length) {
+      setErr(`Complete location first: ${missing.join(", ")}`);
+      return;
+    }
+
     setBusy(true);
     setErr(null);
     setMsg(null);
@@ -308,7 +436,11 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
         method: "PATCH",
         headers: apiHeaders({ json: true }),
         credentials: "same-origin",
-        body: JSON.stringify({ answers, mode: "submit" }),
+        body: JSON.stringify({
+          answers,
+          mode: "submit",
+          ...locationPayload(),
+        }),
       });
 
       const p1 = await readPayload(res1);
@@ -333,6 +465,8 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
     }
   }
 
+  const schemaYearBadge = schemaYear ? `(${schemaYear})` : `(Year N/A)`;
+
   return (
     <ModalShell open={open} title={`Edit Submission #${submissionId ?? ""}`} onClose={onClose}>
       {err && <div className="text-sm text-red-600 mb-2">{err}</div>}
@@ -342,19 +476,113 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
         <div className="text-sm text-gray-600">Loading submission…</div>
       ) : (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs text-gray-600">Year</label>
-              <input
-                type="number"
-                className="border rounded px-2 py-2 text-sm w-full"
-                value={year}
-                onChange={(e) => setYear(Number(e.target.value))}
-              />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+            <div className="md:col-span-3">
+              <label className="block text-xs text-gray-600">Form</label>
+              <div className="flex items-center gap-2">
+                <div className="flex-1">
+                  <FormPicker value={selectedForm} onChange={setSelectedForm} />
+                </div>
+                {selectedForm?.id ? (
+                  <div className="shrink-0 text-xs font-semibold text-gray-700 border rounded px-2 py-2 bg-gray-50">
+                    {schemaYearBadge}
+                  </div>
+                ) : null}
+              </div>
+              {schemaYear ? (
+                <div className="mt-1 text-xs text-gray-500">Schema year: {schemaYear}</div>
+              ) : selectedForm?.id ? (
+                <div className="mt-1 text-xs text-gray-500">Schema year not found on active schema version.</div>
+              ) : null}
+            </div>
+          </div>
+
+          {/* LOCATION UI (added) */}
+          <div className="border rounded-lg p-3 bg-gray-50">
+            <div className="text-sm font-semibold text-gray-900">Location</div>
+            <div className="mt-2 grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-xs text-gray-600">
+                  Region <span className="text-red-600">*</span>
+                </label>
+                <select
+                  className="w-full border rounded px-3 py-2 text-sm bg-white"
+                  value={regName}
+                  onChange={(e) => setRegName(e.target.value)}
+                >
+                  <option value="">Select region</option>
+                  {regionOptions.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-600">
+                  Province <span className="text-red-600">*</span>
+                </label>
+                <select
+                  className="w-full border rounded px-3 py-2 text-sm bg-white"
+                  value={provName}
+                  onChange={(e) => setProvName(e.target.value)}
+                >
+                  <option value="">Select province</option>
+                  {provinceOptions.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-600">
+                  City/Municipality <span className="text-red-600">*</span>
+                </label>
+                <select
+                  className="w-full border rounded px-3 py-2 text-sm bg-white"
+                  value={cityName}
+                  onChange={(e) => setCityName(e.target.value)}
+                  disabled={!provName || !regName}
+                >
+                  <option value="">{!provName || !regName ? "Select region & province first" : "Select city/municity"}</option>
+                  {cityOptions.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-600">
+                  Barangay <span className="text-red-600">*</span>
+                </label>
+                <select
+                  className="w-full border rounded px-3 py-2 text-sm bg-white"
+                  value={brgyName}
+                  onChange={(e) => setBrgyName(e.target.value)}
+                  disabled={!provName || !cityName}
+                >
+                  <option value="">{!provName || !cityName ? "Select city first" : "Select barangay"}</option>
+                  {barangayOptions.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
-            <div className="md:col-span-2">
-              <FormPicker year={year} value={selectedForm} onChange={setSelectedForm} />
+            <div className="mt-2 text-xs text-gray-500">
+              Selected:{" "}
+              <span className="font-medium text-gray-700">
+                {provName || "—"}
+                {cityName ? `, ${cityName}` : ""}
+                {brgyName ? `, ${brgyName}` : ""}
+              </span>
             </div>
           </div>
 
@@ -387,15 +615,12 @@ export default function EditSubmissionModal({ open, submissionId, onClose, onSav
           ) : null}
 
           {selectedForm?.id ? (
-            <FormRendererFromMapping
-              mapping={schemaMapping}
-              fieldMeta={fieldMeta}
-              answers={answers}
-              onChange={setAnswers}
-            />
+            <FormRendererFromMapping mapping={schemaMapping} fieldMeta={fieldMeta} answers={answers} onChange={setAnswers} />
           ) : null}
 
-          {selectedForm?.id ? <div className="text-xs text-gray-400">Loaded fields: {Object.keys(fieldMeta || {}).length}</div> : null}
+          {selectedForm?.id ? (
+            <div className="text-xs text-gray-400">Loaded fields: {Object.keys(fieldMeta || {}).length}</div>
+          ) : null}
         </div>
       )}
     </ModalShell>

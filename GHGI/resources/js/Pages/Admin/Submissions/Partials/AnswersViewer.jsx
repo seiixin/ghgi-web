@@ -21,10 +21,6 @@ function extractSubmission(payload) {
 }
 
 function extractAnswersFromPayload(payload) {
-  // supports:
-  // - payload.data.answers (array/map)
-  // - payload.answers (array/map)
-  // - payload.data.submission.answers (array/map)
   const sub = extractSubmission(payload);
   return (
     sub?.answers ??
@@ -58,7 +54,6 @@ function prettifyAny(value) {
   if (typeof value === "number") return String(value);
 
   if (typeof value === "string") {
-    // YYYY-MM-DD
     if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
       try {
         return new Date(value + "T00:00:00").toLocaleDateString();
@@ -172,6 +167,20 @@ function Pager({ index, total, onPrev, onNext, disabled }) {
   );
 }
 
+function formatLocation(sub) {
+  const prov = sub?.prov_name ?? "";
+  const city = sub?.city_name ?? "";
+  const brgy = sub?.brgy_name ?? "";
+  const reg = sub?.reg_name ?? "";
+
+  const line1 = [prov, city, brgy].filter(Boolean).join(", ");
+  const line2 = reg ? reg : "";
+
+  if (!line1 && !line2) return "-";
+  if (line1 && line2) return `${line1}\n${line2}`;
+  return line1 || line2;
+}
+
 /**
  * Props:
  *  - open: boolean
@@ -199,13 +208,11 @@ export default function AnswersViewer({ open, onClose, startId, submissionIds = 
   const activeId = useMemo(() => (ids.length ? ids[index] : startId), [ids, index, startId]);
   const total = ids.length || (startId ? 1 : 0);
 
-  // When opening OR when startId changes, align to that id
   useEffect(() => {
     if (!open) return;
     if (startIndex >= 0) setIndex(startIndex);
   }, [open, startIndex]);
 
-  // Load the active submission (by page index)
   useEffect(() => {
     if (!open) return;
     if (!activeId) return;
@@ -231,7 +238,6 @@ export default function AnswersViewer({ open, onClose, startId, submissionIds = 
 
         const sub = extractSubmission(payload);
         const ans = extractAnswersFromPayload(payload);
-
         const normalized = normalizeAnswersToFields(ans);
 
         if (cancelled) return;
@@ -251,7 +257,6 @@ export default function AnswersViewer({ open, onClose, startId, submissionIds = 
     };
   }, [open, activeId]);
 
-  // Keyboard navigation (optional but useful)
   useEffect(() => {
     if (!open) return;
 
@@ -300,11 +305,7 @@ export default function AnswersViewer({ open, onClose, startId, submissionIds = 
                 onNext={() => setIndex((i) => (i < ids.length - 1 ? i + 1 : i))}
               />
 
-              <button
-                type="button"
-                className="border rounded px-3 py-2 text-sm hover:bg-gray-50"
-                onClick={onClose}
-              >
+              <button type="button" className="border rounded px-3 py-2 text-sm hover:bg-gray-50" onClick={onClose}>
                 Close
               </button>
             </div>
@@ -324,6 +325,18 @@ export default function AnswersViewer({ open, onClose, startId, submissionIds = 
                 <InfoItem label="Status" value={submission?.status ?? ""} />
                 <InfoItem label="Source" value={submission?.source ?? ""} />
                 <InfoItem label="Submitted At" value={formatDate(submission?.submitted_at)} />
+
+                {/* ADDED LOCATION FIELDS */}
+                <InfoItem label="Region" value={submission?.reg_name ?? ""} />
+                <InfoItem label="Province" value={submission?.prov_name ?? ""} />
+                <InfoItem label="City/Municipality" value={submission?.city_name ?? ""} />
+                <InfoItem label="Barangay" value={submission?.brgy_name ?? ""} />
+              </div>
+
+              {/* Optional compact location */}
+              <div className="mb-6">
+                <div className="text-xs text-gray-500">Location (combined)</div>
+                <div className="text-sm text-gray-900 whitespace-pre-wrap">{formatLocation(submission)}</div>
               </div>
 
               <div className="text-sm font-semibold text-gray-900 mb-2">Answers</div>
@@ -337,9 +350,7 @@ export default function AnswersViewer({ open, onClose, startId, submissionIds = 
                       <div className="text-xs text-gray-500">{f.fieldKey}</div>
                       <div className="text-sm font-medium text-gray-900">{f.label}</div>
 
-                      <div className="text-sm text-gray-800 mt-1 whitespace-pre-wrap">
-                        {prettifyAny(f.value) || "-"}
-                      </div>
+                      <div className="text-sm text-gray-800 mt-1 whitespace-pre-wrap">{prettifyAny(f.value) || "-"}</div>
                     </div>
                   ))}
                 </div>
