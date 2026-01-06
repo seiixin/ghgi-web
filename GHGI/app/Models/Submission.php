@@ -33,4 +33,10 @@ class Submission extends Model
     {
         return $this->belongsTo(User::class, 'created_by');
     }
+
+    public function formType()
+    {
+        return $this->belongsTo(\App\Models\FormType::class, 'form_type_id');
+    }
+
 }
