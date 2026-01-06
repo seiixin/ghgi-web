@@ -115,6 +115,7 @@ Route::middleware('auth')->group(function () {
     });
 });
 
+require __DIR__ . '/api_submissions.php';
 // ------------------------------------------------------
 // Admin dropdown "Management" pages (admin-only)
 // ------------------------------------------------------
