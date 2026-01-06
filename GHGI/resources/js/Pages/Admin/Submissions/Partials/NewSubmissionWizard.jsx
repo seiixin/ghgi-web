@@ -2,61 +2,162 @@ import React, { useEffect, useMemo, useState } from "react";
 import FormPicker from "./FormPicker";
 import FormRendererFromMapping from "./FormRendererFromMapping";
 
-/**
- * Fix for 419 (CSRF mismatch):
- * - Adds X-CSRF-TOKEN + X-Requested-With headers to ALL non-GET requests
- * - Uses same-origin cookies
- *
- * Requirement:
- * - Your main Blade layout must include:
- *   <meta name="csrf-token" content="{{ csrf_token() }}">
- */
+function pickActiveSchema(schemaVersions = []) {
+  const active = (schemaVersions || []).find((v) => v.status === "active");
+  return active || (schemaVersions || [])[0] || null;
+}
+
+function getCsrfToken() {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || "";
+}
+
+function apiHeaders({ json = true } = {}) {
+  const headers = {
+    Accept: "application/json",
+    "X-Requested-With": "XMLHttpRequest",
+  };
+
+  const csrf = getCsrfToken();
+  if (csrf) headers["X-CSRF-TOKEN"] = csrf;
+
+  if (json) headers["Content-Type"] = "application/json";
+  return headers;
+}
+
+async function readPayload(res) {
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return await res.json();
+  const text = await res.text();
+  return { message: text };
+}
+
+function normalizeFormsList(payload) {
+  const list =
+    (Array.isArray(payload) ? payload : null) ??
+    payload?.data?.formTypes ??
+    payload?.formTypes ??
+    payload?.data ??
+    [];
+  return Array.isArray(list) ? list : [];
+}
+
+function schemaFieldsFromFormRow(row) {
+  const versions = row?.schema_versions || row?.schemaVersions || [];
+  const activeSchema = pickActiveSchema(versions);
+  const schemaJson = activeSchema?.schema_json || activeSchema?.schemaJson || {};
+  const fields = Array.isArray(schemaJson.fields) ? schemaJson.fields : [];
+  return { fields, activeSchema };
+}
+
+function toFieldMetaFromSchemaFields(schemaFields = []) {
+  const meta = {};
+  (Array.isArray(schemaFields) ? schemaFields : []).forEach((f) => {
+    if (!f?.key) return;
+    meta[f.key] = {
+      key: f.key,
+      label: f.label ?? f.key,
+      type: f.type ?? "text",
+      required: !!f.required,
+      options: Array.isArray(f.options) ? f.options : [],
+    };
+  });
+  return meta;
+}
+
+function mappingFromSchemaFields(schemaFields = []) {
+  const obj = {};
+  (Array.isArray(schemaFields) ? schemaFields : []).forEach((f) => {
+    if (!f?.key) return;
+    obj[f.key] = null;
+  });
+  return obj;
+}
+
 export default function NewSubmissionWizard({ onCreatedOrSubmitted }) {
   const currentYear = useMemo(() => new Date().getFullYear(), []);
   const [year, setYear] = useState(currentYear);
 
   const [selectedForm, setSelectedForm] = useState(null);
-  const [submission, setSubmission] = useState(null);
-  const [mapping, setMapping] = useState(null);
-  const [answers, setAnswers] = useState({});
 
   const [busy, setBusy] = useState(false);
+  const [schemaLoading, setSchemaLoading] = useState(false);
+
   const [msg, setMsg] = useState(null);
   const [err, setErr] = useState(null);
 
-  function getCsrfToken() {
-    const el = document.querySelector('meta[name="csrf-token"]');
-    return el ? el.getAttribute("content") : "";
+  const [submission, setSubmission] = useState(null);
+
+  // schema-driven render
+  const [schemaMapping, setSchemaMapping] = useState({});
+  const [fieldMeta, setFieldMeta] = useState({});
+  const [answers, setAnswers] = useState({});
+
+  async function loadSchemaForSelectedForm(formTypeId, y) {
+    if (!formTypeId) return;
+
+    setSchemaLoading(true);
+    setErr(null);
+
+    try {
+      const res = await fetch(
+        `/api/admin/forms?year=${encodeURIComponent(String(y))}&active=all`,
+        {
+          headers: { Accept: "application/json" },
+          credentials: "same-origin",
+        }
+      );
+
+      const payload = await readPayload(res);
+      if (!res.ok) throw new Error(payload?.message || `Failed to load forms (${res.status})`);
+
+      const forms = normalizeFormsList(payload);
+      const row = forms.find((x) => String(x.id) === String(formTypeId));
+      if (!row) throw new Error("Form not found");
+
+      const { fields } = schemaFieldsFromFormRow(row);
+
+      if (!fields.length) throw new Error("This form has no schema fields for the selected year.");
+
+      const meta = toFieldMetaFromSchemaFields(fields);
+      const map = mappingFromSchemaFields(fields);
+
+      if (fields.length > 0 && Object.keys(meta).length === 0) {
+        throw new Error("Schema fields found but could not build meta. Check schema field keys.");
+      }
+
+      setFieldMeta(meta);
+      setSchemaMapping(map);
+    } catch (e) {
+      setFieldMeta({});
+      setSchemaMapping({});
+      setErr(e?.message || "Failed to load schema fields");
+    } finally {
+      setSchemaLoading(false);
+    }
   }
 
-  function apiHeaders(isJson = true) {
-    const headers = {
-      Accept: "application/json",
-      "X-Requested-With": "XMLHttpRequest",
-      "X-CSRF-TOKEN": getCsrfToken(),
-    };
-    if (isJson) headers["Content-Type"] = "application/json";
-    return headers;
-  }
-
-  async function safeJson(res) {
-    const contentType = res.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) return await res.json();
-    const text = await res.text();
-    return { message: text };
-  }
-
+  // reset on year change
   useEffect(() => {
-    setSelectedForm(null);
     setSubmission(null);
-    setMapping(null);
+    setFieldMeta({});
+    setSchemaMapping({});
     setAnswers({});
     setMsg(null);
     setErr(null);
   }, [year]);
 
-  async function createSubmission() {
+  // load schema when form changes
+  useEffect(() => {
     if (!selectedForm?.id) return;
+    loadSchemaForSelectedForm(selectedForm.id, year);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedForm?.id, year]);
+
+  async function createSubmission() {
+    if (!selectedForm?.id) {
+      setErr("Select a form first.");
+      return;
+    }
 
     setBusy(true);
     setErr(null);
@@ -65,26 +166,21 @@ export default function NewSubmissionWizard({ onCreatedOrSubmitted }) {
     try {
       const res = await fetch(`/api/admin/submissions`, {
         method: "POST",
-        headers: apiHeaders(true),
+        headers: apiHeaders({ json: true }),
         credentials: "same-origin",
         body: JSON.stringify({ form_type_id: selectedForm.id, year }),
       });
 
-      const payload = await safeJson(res);
-      if (!res.ok) throw new Error(payload?.message || "Failed to create submission");
+      const payload = await readPayload(res);
+      if (!res.ok) throw new Error(payload?.message || `Failed to create submission (${res.status})`);
 
       const sub = payload?.data?.submission ?? payload?.submission ?? payload?.data ?? null;
-      const mappingJson =
-        payload?.data?.mapping_json ??
-        payload?.mapping_json ??
-        sub?.mapping_json ??
-        payload?.mapping ??
-        null;
+      if (!sub?.id) throw new Error("Create succeeded but no submission id returned.");
 
       setSubmission(sub);
-      setMapping(mappingJson || {});
-      setMsg(`Submission #${sub?.id} created.`);
-      if (typeof onCreatedOrSubmitted === "function") onCreatedOrSubmitted();
+      setAnswers({});
+      setMsg(`Submission #${sub.id} created.`);
+      onCreatedOrSubmitted?.();
     } catch (e) {
       setErr(e?.message || "Failed to create");
     } finally {
@@ -93,7 +189,10 @@ export default function NewSubmissionWizard({ onCreatedOrSubmitted }) {
   }
 
   async function saveDraft() {
-    if (!submission?.id) return;
+    if (!submission?.id) {
+      setErr("Create submission first.");
+      return;
+    }
 
     setBusy(true);
     setErr(null);
@@ -102,16 +201,16 @@ export default function NewSubmissionWizard({ onCreatedOrSubmitted }) {
     try {
       const res = await fetch(`/api/admin/submissions/${submission.id}/answers`, {
         method: "PATCH",
-        headers: apiHeaders(true),
+        headers: apiHeaders({ json: true }),
         credentials: "same-origin",
         body: JSON.stringify({ answers, mode: "draft" }),
       });
 
-      const payload = await safeJson(res);
-      if (!res.ok) throw new Error(payload?.message || "Failed to save answers");
+      const payload = await readPayload(res);
+      if (!res.ok) throw new Error(payload?.message || `Failed to save answers (${res.status})`);
 
       setMsg("Saved draft.");
-      if (typeof onCreatedOrSubmitted === "function") onCreatedOrSubmitted();
+      onCreatedOrSubmitted?.();
     } catch (e) {
       setErr(e?.message || "Failed to save");
     } finally {
@@ -120,36 +219,39 @@ export default function NewSubmissionWizard({ onCreatedOrSubmitted }) {
   }
 
   async function submit() {
-    if (!submission?.id) return;
+    if (!submission?.id) {
+      setErr("Create submission first.");
+      return;
+    }
 
     setBusy(true);
     setErr(null);
     setMsg(null);
 
     try {
-      // 1) Save answers
-      const res = await fetch(`/api/admin/submissions/${submission.id}/answers`, {
+      // 1) save answers
+      const res1 = await fetch(`/api/admin/submissions/${submission.id}/answers`, {
         method: "PATCH",
-        headers: apiHeaders(true),
+        headers: apiHeaders({ json: true }),
         credentials: "same-origin",
         body: JSON.stringify({ answers, mode: "submit" }),
       });
 
-      const payload = await safeJson(res);
-      if (!res.ok) throw new Error(payload?.message || "Failed to save answers");
+      const p1 = await readPayload(res1);
+      if (!res1.ok) throw new Error(p1?.message || `Save answers failed (${res1.status})`);
 
-      // 2) Submit
-      const r2 = await fetch(`/api/admin/submissions/${submission.id}/submit`, {
+      // 2) submit
+      const res2 = await fetch(`/api/admin/submissions/${submission.id}/submit`, {
         method: "POST",
-        headers: apiHeaders(false),
+        headers: apiHeaders({ json: false }), // still includes CSRF
         credentials: "same-origin",
       });
 
-      const p2 = await safeJson(r2);
-      if (!r2.ok) throw new Error(p2?.message || "Submit failed");
+      const p2 = await readPayload(res2);
+      if (!res2.ok) throw new Error(p2?.message || `Submit failed (${res2.status})`);
 
       setMsg("Submitted.");
-      if (typeof onCreatedOrSubmitted === "function") onCreatedOrSubmitted();
+      onCreatedOrSubmitted?.();
     } catch (e) {
       setErr(e?.message || "Failed to submit");
     } finally {
@@ -186,7 +288,7 @@ export default function NewSubmissionWizard({ onCreatedOrSubmitted }) {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
           <button
             type="button"
             className="bg-indigo-600 text-white rounded px-4 py-2 text-sm disabled:opacity-60"
@@ -213,17 +315,32 @@ export default function NewSubmissionWizard({ onCreatedOrSubmitted }) {
           >
             Submit
           </button>
+
+          {schemaLoading ? (
+            <div className="text-xs text-gray-500 ml-2">Loading schema fields…</div>
+          ) : null}
         </div>
 
-        {submission?.id && (
+        {submission?.id ? (
           <div className="text-sm text-gray-700">
             Active Submission ID: <span className="font-semibold">#{submission.id}</span>
           </div>
-        )}
+        ) : null}
 
-        {submission?.id && (
-          <FormRendererFromMapping mapping={mapping || {}} answers={answers} onChange={setAnswers} />
-        )}
+        {selectedForm?.id ? (
+          <FormRendererFromMapping
+            mapping={schemaMapping}
+            fieldMeta={fieldMeta}
+            answers={answers}
+            onChange={setAnswers}
+          />
+        ) : null}
+
+        {selectedForm?.id ? (
+          <div className="text-xs text-gray-400">
+            Loaded fields: {Object.keys(fieldMeta || {}).length}
+          </div>
+        ) : null}
       </div>
     </div>
   );
