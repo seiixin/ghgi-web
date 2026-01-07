@@ -176,12 +176,12 @@ function quantileClassByValue(valuesByKey) {
 function levelColor(level) {
   if (level === "high") return "#ef4444";
   if (level === "medium") return "#f59e0b";
-  if (level === "low") return "#22c55e";
+  if (level === "low") return "#ffff00";
   return "#e5e7eb";
 }
 
 function surveyedFillColor(isSurveyed) {
-  return isSurveyed ? "#22c55e" : "#ef4444";
+  return isSurveyed ? "rgba(0, 0, 0, 0)" : "#00f73eff";
 }
 
 function cityListFromGeojson(fc) {
@@ -247,15 +247,27 @@ function Legend({ mode }) {
         ) : (
           <>
             <div className="flex items-center gap-2">
-              <span className="inline-block h-3 w-3 rounded-sm" style={{ background: surveyedFillColor(true) }} />
-              <span className="text-gray-700">Surveyed</span>
-            </div>
-            <div className="flex items-center gap-2">
               <span className="inline-block h-3 w-3 rounded-sm" style={{ background: surveyedFillColor(false) }} />
               <span className="text-gray-700">Unsurveyed</span>
             </div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function BigLoadingOverlay({ show, text = "Computing…" }) {
+  if (!show) return null;
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
+      <div className="bg-white rounded-2xl shadow-xl border border-gray-200 px-8 py-7 flex flex-col items-center gap-4">
+        <div
+          className="h-20 w-20 rounded-full border-[10px] border-gray-200 border-t-gray-900 animate-spin"
+          aria-label="Loading"
+        />
+        <div className="text-base font-semibold text-gray-900">{text}</div>
+        <div className="text-xs text-gray-500">Please wait while totals are computed.</div>
       </div>
     </div>
   );
@@ -280,10 +292,12 @@ export default function MapIndex() {
   const allCities = useMemo(() => cityListFromGeojson(lagunaBoundaries), [lagunaBoundaries]);
   const [city, setCity] = useState("__ALL__");
 
+  // DEFAULT OPTIMIZATION: forms none selected; but layer toggles are checked
   const [enabledFormIds, setEnabledFormIds] = useState(new Set());
   const [showSurveyLayer, setShowSurveyLayer] = useState(true);
   const [showEmissionLayer, setShowEmissionLayer] = useState(true);
 
+  // IMPORTANT: big overlay is driven ONLY by "Computing…" (loadingStats)
   const [loadingStats, setLoadingStats] = useState(false);
   const [statsError, setStatsError] = useState(null);
 
@@ -367,13 +381,10 @@ export default function MapIndex() {
       setYears(yrs);
       setYear((prev) => (prev ? prev : String(defaultYear)));
 
-      // enable all forms that have schema for defaultYear
-      const enabled = new Set();
-      for (const f of list) {
-        const sc = schemaForYear(f, defaultYear);
-        if (sc && String(sc.year) === String(defaultYear)) enabled.add(String(f.id));
-      }
-      setEnabledFormIds(enabled);
+      // DEFAULT: none selected (optimization)
+      setEnabledFormIds(new Set());
+      setShowEmissionLayer(true);
+      setShowSurveyLayer(true);
     } catch (e) {
       setForms([]);
       setYears([]);
@@ -392,12 +403,8 @@ export default function MapIndex() {
   useEffect(() => {
     if (!year || !forms.length) return;
 
-    const enabled = new Set();
-    for (const f of forms) {
-      const sc = schemaForYear(f, year);
-      if (sc && String(sc.year) === String(year)) enabled.add(String(f.id));
-    }
-    setEnabledFormIds(enabled);
+    // DEFAULT ON YEAR CHANGE: none selected (optimization)
+    setEnabledFormIds(new Set());
     setSelectedCityOnMap(null);
   }, [year, forms]);
 
@@ -578,7 +585,9 @@ export default function MapIndex() {
       const filtered = {
         ...lagunaBoundaries,
         features: (lagunaBoundaries.features || []).filter(
-          (f) => String(f?.properties?.city_name || "").toLowerCase() === String(cityName).toLowerCase()
+          (f) =>
+            String(f?.properties?.city_name || "").toLowerCase() ===
+            String(cityName).toLowerCase()
         ),
       };
       const bounds = L.geoJSON(filtered).getBounds();
@@ -671,6 +680,9 @@ export default function MapIndex() {
 
   return (
     <AuthenticatedLayout title="Map">
+      {/* BIG OVERLAY: based on "Computing…" ONLY */}
+      <BigLoadingOverlay show={loadingStats} text="Computing…" />
+
       <PageHeader
         title="Community-Level GHG Map"
         subtitle="Use the year, municipality, and layer controls to explore survey coverage and computed emissions per municipality."
@@ -758,11 +770,19 @@ export default function MapIndex() {
 
                 <div className="space-y-2">
                   <label className="flex items-center gap-2 text-sm text-gray-800">
-                    <input type="checkbox" checked={showEmissionLayer} onChange={(e) => setShowEmissionLayer(e.target.checked)} />
+                    <input
+                      type="checkbox"
+                      checked={showEmissionLayer}
+                      onChange={(e) => setShowEmissionLayer(e.target.checked)}
+                    />
                     Emission Index (low/medium/high)
                   </label>
                   <label className="flex items-center gap-2 text-sm text-gray-800">
-                    <input type="checkbox" checked={showSurveyLayer} onChange={(e) => setShowSurveyLayer(e.target.checked)} />
+                    <input
+                      type="checkbox"
+                      checked={showSurveyLayer}
+                      onChange={(e) => setShowSurveyLayer(e.target.checked)}
+                    />
                     Survey Area (surveyed/unsurveyed)
                   </label>
                 </div>

@@ -23,11 +23,6 @@ return new class extends Migration
             $table->index(['form_type_id', 'year']);
             $table->index(['status', 'created_at']);
             $table->index(['source', 'created_at']);
-
-            // FKs (optional; uncomment if your referenced tables exist)
-            // $table->foreign('form_type_id')->references('id')->on('form_types')->cascadeOnDelete();
-            // $table->foreign('mapping_id')->references('id')->on('form_mappings')->nullOnDelete();
-            // $table->foreign('created_by')->references('id')->on('users')->nullOnDelete();
         });
     }
 
