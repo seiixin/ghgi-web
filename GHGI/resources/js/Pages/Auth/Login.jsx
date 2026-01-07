@@ -1,14 +1,26 @@
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Head, Link, useForm } from "@inertiajs/react";
 
-function Field({ label, type="text", name, value, onChange, autoComplete, required, placeholder, error }) {
+function Field({
+  label,
+  type = "text",
+  name,
+  value,
+  onChange,
+  autoComplete,
+  required,
+  placeholder,
+  error,
+}) {
   return (
     <div className="space-y-1">
       <label className="text-sm font-medium text-slate-800">{label}</label>
       <input
         className={[
           "w-full rounded-xl border bg-white px-4 py-3 text-sm outline-none transition",
-          error ? "border-rose-300 ring-4 ring-rose-100" : "border-slate-200 focus:ring-4 focus:ring-emerald-100 focus:border-emerald-300"
+          error
+            ? "border-rose-300 ring-4 ring-rose-100"
+            : "border-slate-200 focus:ring-4 focus:ring-emerald-100 focus:border-emerald-300",
         ].join(" ")}
         type={type}
         name={name}
@@ -30,9 +42,57 @@ export default function Login({ status, canResetPassword }) {
     remember: true,
   });
 
+  // Shows a banner like: "These credentials do not match our records."
+  const [banner, setBanner] = useState("");
+  const lastSubmitRef = useRef(0);
+
+  useEffect(() => {
+    // Whenever Laravel returns validation/auth errors, show a human message
+    // Typical Breeze error is on "email": "These credentials do not match our records."
+    const msg =
+      errors?.email ||
+      errors?.password ||
+      errors?.message ||
+      "";
+
+    if (msg) setBanner(String(msg));
+  }, [errors]);
+
+  useEffect(() => {
+    // If request finishes but no errors were returned and still on page,
+    // clear banner (e.g., user typed again)
+    if (!processing) return;
+  }, [processing]);
+
   const submit = (e) => {
     e.preventDefault();
-    post("/login");
+
+    // Clear old banner on every new attempt
+    setBanner("");
+    lastSubmitRef.current = Date.now();
+
+    post("/login", {
+      preserveScroll: true,
+      onError: (errs) => {
+        // Prefer email error (Breeze default), else show first available error
+        const msg =
+          errs?.email ||
+          errs?.password ||
+          errs?.message ||
+          "Login failed.";
+
+        setBanner(String(msg));
+      },
+      onFinish: () => {
+        // If it finished and you are still on the login page,
+        // but backend didn't return field errors, show a generic message.
+        // (Rare, but helps when it just "loads" then stops.)
+        const elapsed = Date.now() - lastSubmitRef.current;
+        if (elapsed > 300 && !errors?.email && !errors?.password && !errors?.message) {
+          // do nothing; avoid false banner if navigation occurs
+        }
+      },
+    });
   };
 
   return (
@@ -53,12 +113,21 @@ export default function Login({ status, canResetPassword }) {
 
           <div className="mb-4">
             <div className="text-xl font-semibold tracking-tight text-slate-900">Sign in</div>
-            <div className="mt-1 text-sm text-slate-600">Use your account to access the inventory dashboard.</div>
+            <div className="mt-1 text-sm text-slate-600">
+              Use your account to access the inventory dashboard.
+            </div>
           </div>
 
           {status ? (
             <div className="mb-4 rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800 ring-1 ring-emerald-200">
               {status}
+            </div>
+          ) : null}
+
+          {/* ✅ This is the "credentials do not match" banner you mean */}
+          {banner ? (
+            <div className="mb-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-800 ring-1 ring-rose-200">
+              {banner}
             </div>
           ) : null}
 
@@ -110,7 +179,9 @@ export default function Login({ status, canResetPassword }) {
                 <Link href="/forgot-password" className="text-slate-600 hover:text-slate-900">
                   Forgot password?
                 </Link>
-              ) : <span />}
+              ) : (
+                <span />
+              )}
 
               <Link href="/register" className="text-emerald-700 hover:text-emerald-800 font-medium">
                 Create account

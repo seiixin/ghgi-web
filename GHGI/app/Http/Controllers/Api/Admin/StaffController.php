@@ -12,7 +12,7 @@ use Illuminate\Support\Str;
 class StaffController extends Controller
 {
     /**
-     * GET /api/admin/staff
+     * GET /admin/staff   (or /api/admin/staff depending on your routes)
      * Query params:
      * - q (search by name/email)
      * - role (ADMIN|ENUMERATOR|REVIEWER)
@@ -46,7 +46,6 @@ class StaffController extends Controller
             ->orderBy('name')
             ->paginate($perPage);
 
-        // normalized response for React
         $rows = $users->getCollection()->map(function (User $u) use ($hasStatus) {
             return [
                 'id' => $u->id,
@@ -71,11 +70,15 @@ class StaffController extends Controller
     }
 
     /**
-     * POST /api/admin/staff
+     * POST /admin/staff
      * Body:
      * - name, email, role (ADMIN|ENUMERATOR|REVIEWER)
      * - password (optional; auto-generate if missing)
      * - status (optional if users.status exists)
+     *
+     * IMPORTANT:
+     * Your User model has password => 'hashed' cast.
+     * So assign PLAIN password and let Eloquent cast hash it.
      */
     public function store(Request $request)
     {
@@ -91,18 +94,19 @@ class StaffController extends Controller
 
         $plain = $validated['password'] ?? Str::password(12);
 
-        $payload = [
-            'name' => $validated['name'],
-            'email' => $validated['email'],
-            'password' => Hash::make($plain),
-            'role' => strtoupper($validated['role']),
-        ];
+        $user = new User();
+        $user->name = $validated['name'];
+        $user->email = $validated['email'];
+        $user->role = strtoupper($validated['role']);
+
+        // IMPORTANT: assign plain, cast will hash on save
+        $user->password = $plain;
 
         if ($hasStatus && array_key_exists('status', $validated) && $validated['status'] !== null) {
-            $payload['status'] = $validated['status'];
+            $user->status = $validated['status'];
         }
 
-        $user = User::create($payload);
+        $user->save();
 
         return response()->json([
             'data' => [
@@ -112,12 +116,13 @@ class StaffController extends Controller
                 'role' => $user->role,
                 'status' => $hasStatus ? ($user->status ?? null) : null,
             ],
+            // send back plain only on create (you can remove if you don't want to reveal it)
             'temp_password' => $plain,
         ], 201);
     }
 
     /**
-     * PATCH /api/admin/staff/{id}
+     * PATCH /admin/staff/{id}
      * Body:
      * - role (ADMIN|ENUMERATOR|REVIEWER) optional
      * - status optional if users.status exists
@@ -161,23 +166,47 @@ class StaffController extends Controller
     }
 
     /**
-     * POST /api/admin/staff/{id}/reset-password
-     * Returns a temporary password (admin action)
+     * POST /admin/staff/{id}/reset-password
+     *
+     * Manual reset (admin action):
+     * Body:
+     * - current_password (admin's current password) required
+     * - new_password required
+     * - new_password_confirmation required (because of 'confirmed')
+     *
+     * IMPORTANT:
+     * Assign PLAIN new_password so User cast hashes it.
      */
     public function resetPassword(Request $request, int $id)
     {
+        $request->validate([
+            'current_password' => ['required', 'string'],
+            'new_password' => ['required', 'string', 'min:8', 'confirmed'],
+        ]);
+
+        $actor = $request->user();
+
+        // verify admin password
+        if (!$actor || !Hash::check($request->input('current_password'), $actor->password)) {
+            return response()->json(['message' => 'Current password is incorrect'], 422);
+        }
+
         $user = User::findOrFail($id);
 
-        $temp = Str::password(12);
-        $user->password = Hash::make($temp);
+        // IMPORTANT: assign plain, cast will hash on save
+        $user->password = $request->input('new_password');
+
+        // invalidate remember-me token
+        $user->setRememberToken(Str::random(60));
+
         $user->save();
 
         return response()->json([
+            'ok' => true,
             'data' => [
                 'id' => $user->id,
                 'email' => $user->email,
             ],
-            'temp_password' => $temp,
         ]);
     }
 }

@@ -2,9 +2,19 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import AuthenticatedLayout from "../../../Layouts/AuthenticatedLayout";
 import PageHeader from "../../../Components/Shared/PageHeader";
 
+/**
+ * routes (based on your route:list):
+ *   GET    /admin/staff
+ *   POST   /admin/staff
+ *   PATCH  /admin/staff/{id}
+ *   POST   /admin/staff/{id}/reset-password
+ *
+ * Page (Inertia):
+ *   /admin/management/staff
+ */
 const STAFF_API_BASE = "/admin/staff";
 
-// --- helpers ---
+// ---------------- helpers ----------------
 async function readJsonOrText(res) {
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) return await res.json();
@@ -31,6 +41,7 @@ function roleLabel(role) {
   return r || "—";
 }
 
+// CSRF sources (Breeze includes meta csrf-token in app layout)
 function getMetaCsrf() {
   const el = document.querySelector('meta[name="csrf-token"]');
   return el?.getAttribute("content") || "";
@@ -55,6 +66,7 @@ function getXsrfFromCookie() {
   }
 }
 
+// In case your routes are protected by auth:sanctum (SPA), this endpoint sets XSRF-TOKEN cookie
 async function ensureCsrfCookie() {
   await fetch("/sanctum/csrf-cookie", {
     method: "GET",
@@ -66,6 +78,11 @@ async function ensureCsrfCookie() {
   });
 }
 
+/**
+ * Generic fetch wrapper
+ * - sends both X-CSRF-TOKEN (meta) and X-XSRF-TOKEN (cookie) when available
+ * - retries once on 419 after calling /sanctum/csrf-cookie
+ */
 async function apiFetch(path, opts = {}) {
   const method = (opts.method || "GET").toUpperCase();
   const isWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
@@ -83,15 +100,15 @@ async function apiFetch(path, opts = {}) {
   };
 
   const doFetch = async () => {
-    const res = await fetch(path, {
+    return fetch(path, {
       credentials: "same-origin",
       ...opts,
       headers: buildHeaders(),
     });
-    return res;
   };
 
   let res = await doFetch();
+
   if (res.status === 419 && isWrite) {
     await ensureCsrfCookie();
     res = await doFetch();
@@ -111,6 +128,33 @@ async function apiFetch(path, opts = {}) {
   }
 
   return payload;
+}
+
+/**
+ * POST form-encoded request with optional method spoofing.
+ * This avoids the most common Laravel 419 issues when sending JSON.
+ * - Always includes _token from meta csrf token (if present).
+ * - For non-POST methods, includes _method=PATCH/PUT/DELETE.
+ */
+async function apiPostForm(path, dataObj, method = "POST") {
+  const csrf = getMetaCsrf();
+  const params = new URLSearchParams();
+
+  if (csrf) params.set("_token", csrf);
+
+  const m = String(method || "POST").toUpperCase();
+  if (m !== "POST") params.set("_method", m);
+
+  Object.entries(dataObj || {}).forEach(([k, v]) => {
+    if (v === undefined || v === null) return;
+    params.set(k, String(v));
+  });
+
+  return apiFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+    body: params.toString(),
+  });
 }
 
 function StatusPill({ value }) {
@@ -257,6 +301,7 @@ function Pagination({ meta, onPage }) {
         <span className="font-semibold text-slate-900">{last}</span> • Total{" "}
         <span className="font-semibold text-slate-900">{meta.total ?? 0}</span>
       </div>
+
       <div className="flex items-center gap-2">
         <SecondaryButton type="button" disabled={!canPrev} onClick={() => onPage(current - 1)}>
           Prev
@@ -269,54 +314,51 @@ function Pagination({ meta, onPage }) {
   );
 }
 
+// ---------------- page ----------------
 export default function StaffManagement() {
-  // data
   const [rows, setRows] = useState([]);
   const [meta, setMeta] = useState(null);
 
-  // ui state
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
 
-  // filters
   const [q, setQ] = useState("");
   const [role, setRole] = useState("");
-  const [status, setStatus] = useState(""); // UI-only unless backend supports it
+  const [status, setStatus] = useState("");
   const [perPage, setPerPage] = useState(15);
   const [page, setPage] = useState(1);
 
-  // modals
   const [openCreate, setOpenCreate] = useState(false);
   const [openEdit, setOpenEdit] = useState(false);
   const [openReset, setOpenReset] = useState(false);
 
-  // forms
   const [createForm, setCreateForm] = useState({
     name: "",
     email: "",
     role: "ENUMERATOR",
-    status: "active", // UI-only, will NOT be sent
+    status: "active", // UI-only (not sent)
     password: "",
   });
 
   const [editUser, setEditUser] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", role: "", status: "" }); // status UI-only
-  const [resetUser, setResetUser] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", role: "", status: "" });
 
-  // password display (global + modal)
+  const [resetUser, setResetUser] = useState(null);
+  const [resetForm, setResetForm] = useState({
+    current_password: "",
+    new_password: "",
+    new_password_confirmation: "",
+  });
+  const [showResetPw, setShowResetPw] = useState(false);
+
   const [lastTempPassword, setLastTempPassword] = useState("");
-  const [resetTempPassword, setResetTempPassword] = useState("");
 
   const queryString = useMemo(() => {
     const p = new URLSearchParams();
     if (q) p.set("q", q);
     if (role) p.set("role", role);
-
-    // IMPORTANT: only include status in query if backend supports it.
-    // If backend rejects it, comment next two lines.
     if (status) p.set("status", status);
-
     p.set("page", String(page));
     p.set("per_page", String(perPage));
     return p.toString();
@@ -355,7 +397,6 @@ export default function StaffManagement() {
   }
 
   useEffect(() => {
-    // make sure CSRF cookie exists early (helps avoid first-write 419)
     ensureCsrfCookie().catch(() => {});
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -379,7 +420,12 @@ export default function StaffManagement() {
 
   function openResetModal(u) {
     setResetUser(u);
-    setResetTempPassword("");
+    setResetForm({
+      current_password: "",
+      new_password: "",
+      new_password_confirmation: "",
+    });
+    setShowResetPw(false);
     setErr("");
     setOpenReset(true);
   }
@@ -389,23 +435,20 @@ export default function StaffManagement() {
     setErr("");
     setLastTempPassword("");
 
-    // IMPORTANT: do NOT send status unless backend supports it (yours rejects it).
     const body = {
       name: createForm.name,
       email: createForm.email,
       role: createForm.role,
     };
+
+    // Do NOT send status (backend rejects it)
     if (createForm.password) body.password = createForm.password;
 
     try {
-      const resp = await apiFetch(STAFF_API_BASE, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
+      const resp = await apiPostForm(STAFF_API_BASE, body, "POST");
       const temp = resp?.temp_password || "";
       setLastTempPassword(temp);
+
       setToast("User created");
       setOpenCreate(false);
       setCreateForm({
@@ -430,17 +473,10 @@ export default function StaffManagement() {
     const body = {};
     if (editForm.name !== "" && editForm.name !== editUser.name) body.name = editForm.name;
     if (editForm.role && editForm.role !== editUser.role) body.role = editForm.role;
-
-    // IMPORTANT: do NOT send status unless backend supports it
-    // if (editForm.status !== "" && editForm.status !== editUser.status) body.status = editForm.status;
+    // Do NOT send status unless backend supports it
 
     try {
-      await apiFetch(`${STAFF_API_BASE}/${editUser.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
+      await apiPostForm(`${STAFF_API_BASE}/${editUser.id}`, body, "PATCH");
       setToast("User updated");
       setOpenEdit(false);
       setEditUser(null);
@@ -450,23 +486,45 @@ export default function StaffManagement() {
     }
   }
 
-  async function onResetPassword() {
+  function validateResetForm() {
+    const cp = resetForm.current_password || "";
+    const np = resetForm.new_password || "";
+    const npc = resetForm.new_password_confirmation || "";
+
+    if (!cp || !np || !npc) return "Fill up all password fields.";
+    if (np.length < 8) return "New password must be at least 8 characters.";
+    if (np !== npc) return "New password confirmation does not match.";
+    return "";
+  }
+
+  async function onResetPasswordSubmit(e) {
+    e.preventDefault();
     if (!resetUser?.id) return;
+
     setErr("");
-    setResetTempPassword("");
-    setLastTempPassword("");
+
+    const v = validateResetForm();
+    if (v) {
+      setErr(v);
+      return;
+    }
 
     try {
-      const resp = await apiFetch(`${STAFF_API_BASE}/${resetUser.id}/reset-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+      await apiPostForm(`${STAFF_API_BASE}/${resetUser.id}/reset-password`, {
+        current_password: resetForm.current_password,
+        new_password: resetForm.new_password,
+        new_password_confirmation: resetForm.new_password_confirmation,
       });
 
-      const temp = resp?.temp_password || "";
-      setResetTempPassword(temp);     // show inside modal
-      setLastTempPassword(temp);      // also show in top panel
-      setToast("Password reset");
+      setToast("Password updated");
+      setOpenReset(false);
+      setResetUser(null);
+      setResetForm({
+        current_password: "",
+        new_password: "",
+        new_password_confirmation: "",
+      });
+      setShowResetPw(false);
     } catch (e2) {
       setErr(e2?.message || "Reset failed");
     }
@@ -538,7 +596,6 @@ export default function StaffManagement() {
                 </Select>
               </div>
 
-              {/* UI-only: remove status filter if backend rejects query param */}
               <div className="md:col-span-2">
                 <div className="text-xs font-semibold text-slate-700">Status (optional)</div>
                 <Select
@@ -552,6 +609,7 @@ export default function StaffManagement() {
                   <option value="active">active</option>
                   <option value="inactive">inactive</option>
                 </Select>
+                <div className="mt-1 text-xs text-slate-500">Filter only works if backend supports it.</div>
               </div>
 
               <div className="md:col-span-2 flex items-end justify-end gap-2">
@@ -611,7 +669,7 @@ export default function StaffManagement() {
           {lastTempPassword ? (
             <div className="mt-4 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
               <div className="text-xs font-semibold uppercase tracking-wider text-slate-600">
-                Temporary password
+                Temporary password (create response)
               </div>
               <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm font-semibold text-slate-900">{lastTempPassword}</div>
@@ -679,9 +737,7 @@ export default function StaffManagement() {
                         <div className="text-sm font-semibold text-slate-900">{u.name}</div>
                         <div className="text-xs text-slate-500">ID: {u.id}</div>
                       </td>
-                      <td className="border-b border-slate-100 px-4 py-3 text-sm text-slate-700">
-                        {u.email}
-                      </td>
+                      <td className="border-b border-slate-100 px-4 py-3 text-sm text-slate-700">{u.email}</td>
                       <td className="border-b border-slate-100 px-4 py-3">
                         <span className="inline-flex items-center rounded-full bg-slate-900 px-2 py-0.5 text-xs font-semibold text-white">
                           {roleLabel(u.role)}
@@ -712,6 +768,15 @@ export default function StaffManagement() {
 
           <div className="border-t border-slate-100 p-4">
             <Pagination meta={meta} onPage={(p) => setPage(p)} />
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+          <div className="text-sm font-semibold text-slate-900">CSRF note</div>
+          <div className="mt-2 text-sm text-slate-700">
+            This page sends write requests as <code className="font-semibold">application/x-www-form-urlencoded</code> and includes
+            <code className="font-semibold"> _token</code> from <code className="font-semibold">meta[name=&quot;csrf-token&quot;]</code>.
+            This is the most reliable way to avoid 419 CSRF mismatch with Laravel session middleware.
           </div>
         </div>
       </div>
@@ -753,27 +818,20 @@ export default function StaffManagement() {
 
             <div>
               <div className="text-xs font-semibold text-slate-700">Role</div>
-              <Select
-                value={createForm.role}
-                onChange={(e) => setCreateForm((s) => ({ ...s, role: e.target.value }))}
-              >
+              <Select value={createForm.role} onChange={(e) => setCreateForm((s) => ({ ...s, role: e.target.value }))}>
                 <option value="ADMIN">ADMIN</option>
                 <option value="ENUMERATOR">ENUMERATOR</option>
                 <option value="REVIEWER">REVIEWER</option>
               </Select>
             </div>
 
-            {/* UI-only status (not sent) */}
             <div>
               <div className="text-xs font-semibold text-slate-700">Status (UI-only)</div>
-              <Select
-                value={createForm.status}
-                onChange={(e) => setCreateForm((s) => ({ ...s, status: e.target.value }))}
-              >
+              <Select value={createForm.status} onChange={(e) => setCreateForm((s) => ({ ...s, status: e.target.value }))}>
                 <option value="active">active</option>
                 <option value="inactive">inactive</option>
               </Select>
-              <div className="mt-1 text-xs text-slate-500">Not saved (backend has no status).</div>
+              <div className="mt-1 text-xs text-slate-500">Not saved (backend rejects status).</div>
             </div>
 
             <div className="sm:col-span-2">
@@ -802,7 +860,7 @@ export default function StaffManagement() {
                 placeholder="Leave blank to auto-generate on server"
               />
               <div className="mt-1 text-xs text-slate-500">
-                If blank, backend returns <span className="font-semibold">temp_password</span>.
+                If blank, backend may return <span className="font-semibold">temp_password</span>.
               </div>
             </div>
           </div>
@@ -837,10 +895,7 @@ export default function StaffManagement() {
 
             <div>
               <div className="text-xs font-semibold text-slate-700">Role</div>
-              <Select
-                value={editForm.role || ""}
-                onChange={(e) => setEditForm((s) => ({ ...s, role: e.target.value }))}
-              >
+              <Select value={editForm.role || ""} onChange={(e) => setEditForm((s) => ({ ...s, role: e.target.value }))}>
                 <option value="">(no change)</option>
                 <option value="ADMIN">ADMIN</option>
                 <option value="ENUMERATOR">ENUMERATOR</option>
@@ -848,7 +903,6 @@ export default function StaffManagement() {
               </Select>
             </div>
 
-            {/* UI-only status, not saved */}
             <div>
               <div className="text-xs font-semibold text-slate-700">Status (UI-only)</div>
               <Select
@@ -859,7 +913,7 @@ export default function StaffManagement() {
                 <option value="active">active</option>
                 <option value="inactive">inactive</option>
               </Select>
-              <div className="mt-1 text-xs text-slate-500">Not saved (backend has no status).</div>
+              <div className="mt-1 text-xs text-slate-500">Not saved.</div>
             </div>
           </div>
         </form>
@@ -868,52 +922,102 @@ export default function StaffManagement() {
       {/* Reset modal */}
       <Modal
         open={openReset}
-        title="Reset Password"
-        subtitle={resetUser ? `Generate a new temporary password for ${resetUser.email}` : ""}
+        title="Set New Password"
+        subtitle={resetUser ? `Set a new password for ${resetUser.email}` : ""}
         onClose={() => {
           setOpenReset(false);
           setResetUser(null);
-          setResetTempPassword("");
+          setResetForm({
+            current_password: "",
+            new_password: "",
+            new_password_confirmation: "",
+          });
+          setShowResetPw(false);
         }}
         footer={
-          <DangerButton type="button" onClick={onResetPassword} disabled={!resetUser}>
-            Generate New Password
+          <DangerButton type="submit" form="reset-password-form" disabled={!resetUser}>
+            Save Password
           </DangerButton>
         }
       >
-        <div className="space-y-3">
-          <div className="text-sm text-slate-700">
-            This generates a new temporary password (admin action). The user will need it to log in.
+        <form id="reset-password-form" onSubmit={onResetPasswordSubmit} className="space-y-4">
+          <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
+            This will set the selected user's password to the value you enter. For confirmation, enter your current admin password.
           </div>
 
-          {resetTempPassword ? (
-            <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
-              <div className="text-xs font-semibold uppercase tracking-wider text-slate-600">
-                New temporary password
-              </div>
-              <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="text-sm font-semibold text-slate-900">{resetTempPassword}</div>
-                <SecondaryButton
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(resetTempPassword);
-                      setToast("Copied");
-                    } catch {
-                      setToast("Copy failed");
-                    }
-                  }}
-                >
-                  Copy
-                </SecondaryButton>
-              </div>
+          <div className="space-y-3">
+            <div>
+              <div className="text-xs font-semibold text-slate-700">Your Current Password (Admin)</div>
+              <TextInput
+                type={showResetPw ? "text" : "password"}
+                value={resetForm.current_password}
+                onChange={(e) => setResetForm((s) => ({ ...s, current_password: e.target.value }))}
+                placeholder="Enter your current password"
+                autoComplete="current-password"
+                required
+              />
             </div>
-          ) : (
-            <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
-              Click <span className="font-semibold">Generate New Password</span> to create and reveal the password here.
+
+            <div>
+              <div className="text-xs font-semibold text-slate-700">New Password (for selected user)</div>
+              <TextInput
+                type={showResetPw ? "text" : "password"}
+                value={resetForm.new_password}
+                onChange={(e) => setResetForm((s) => ({ ...s, new_password: e.target.value }))}
+                placeholder="At least 8 characters"
+                autoComplete="new-password"
+                required
+              />
             </div>
-          )}
-        </div>
+
+            <div>
+              <div className="text-xs font-semibold text-slate-700">Confirm New Password</div>
+              <TextInput
+                type={showResetPw ? "text" : "password"}
+                value={resetForm.new_password_confirmation}
+                onChange={(e) => setResetForm((s) => ({ ...s, new_password_confirmation: e.target.value }))}
+                placeholder="Repeat new password"
+                autoComplete="new-password"
+                required
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-slate-900"
+                  checked={showResetPw}
+                  onChange={(e) => setShowResetPw(e.target.checked)}
+                />
+                Show passwords
+              </label>
+
+              <button
+                type="button"
+                className="text-sm font-semibold text-slate-700 underline decoration-slate-300 underline-offset-4 hover:text-slate-900"
+                onClick={() => {
+                  const gen = (len = 12) => {
+                    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
+                    let out = "";
+                    for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+                    return out;
+                  };
+                  const pw = gen(12);
+                  setResetForm((s) => ({ ...s, new_password: pw, new_password_confirmation: pw }));
+                  setShowResetPw(true);
+                }}
+              >
+                Generate new password
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-500">
+              Sent as form data with <code>_token</code> + <code>current_password</code> + <code>new_password</code> +{" "}
+              <code>new_password_confirmation</code>.
+            </div>
+          </div>
+        </form>
       </Modal>
     </AuthenticatedLayout>
   );
