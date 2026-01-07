@@ -26,4 +26,5 @@ Route::middleware(['auth:sanctum', 'role:ADMIN'])
         Route::post('/staff', [StaffController::class, 'store'])->name('staff.store');
         Route::patch('/staff/{id}', [StaffController::class, 'update'])->name('staff.update');
         Route::post('/staff/{id}/reset-password', [StaffController::class, 'resetPassword'])->name('staff.reset_password');
+        Route::delete('/staff/{id}', [StaffController::class, 'destroy']);
     });

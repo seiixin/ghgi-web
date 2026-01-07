@@ -1,13 +1,15 @@
+// resources/js/Pages/Admin/Management/StaffManagement.jsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import AuthenticatedLayout from "../../../Layouts/AuthenticatedLayout";
 import PageHeader from "../../../Components/Shared/PageHeader";
 
 /**
  * routes (based on your route:list):
- *   GET    /admin/staff
- *   POST   /admin/staff
- *   PATCH  /admin/staff/{id}
- *   POST   /admin/staff/{id}/reset-password
+ *   GET     /admin/staff
+ *   POST    /admin/staff
+ *   PATCH   /admin/staff/{id}
+ *   POST    /admin/staff/{id}/reset-password
+ *   DELETE  /admin/staff/{id}         <-- REQUIRED (you added this in controller + routes)
  *
  * Page (Inertia):
  *   /admin/management/staff
@@ -120,7 +122,9 @@ async function apiFetch(path, opts = {}) {
     const msg =
       payload?.message ||
       payload?.error ||
-      (res.status === 419 ? "CSRF token missing/expired (419)" : "Request failed");
+      (res.status === 419
+        ? "CSRF token missing/expired (419)"
+        : "Request failed");
     const e = new Error(msg);
     e.status = res.status;
     e.payload = payload;
@@ -152,7 +156,9 @@ async function apiPostForm(path, dataObj, method = "POST") {
 
   return apiFetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+    },
     body: params.toString(),
   });
 }
@@ -258,7 +264,9 @@ function Modal({ open, title, subtitle, children, footer, onClose }) {
   useEffect(() => {
     if (!open) return;
     setTimeout(() => {
-      panelRef.current?.querySelector("input,select,button,textarea")?.focus?.();
+      panelRef.current
+        ?.querySelector("input,select,button,textarea")
+        ?.focus?.();
     }, 0);
   }, [open]);
 
@@ -272,7 +280,9 @@ function Modal({ open, title, subtitle, children, footer, onClose }) {
       >
         <div className="border-b border-slate-100 p-5">
           <div className="text-base font-semibold text-slate-900">{title}</div>
-          {subtitle ? <div className="mt-1 text-sm text-slate-600">{subtitle}</div> : null}
+          {subtitle ? (
+            <div className="mt-1 text-sm text-slate-600">{subtitle}</div>
+          ) : null}
         </div>
         <div className="p-5">{children}</div>
         <div className="flex items-center justify-end gap-2 border-t border-slate-100 p-5">
@@ -303,10 +313,18 @@ function Pagination({ meta, onPage }) {
       </div>
 
       <div className="flex items-center gap-2">
-        <SecondaryButton type="button" disabled={!canPrev} onClick={() => onPage(current - 1)}>
+        <SecondaryButton
+          type="button"
+          disabled={!canPrev}
+          onClick={() => onPage(current - 1)}
+        >
           Prev
         </SecondaryButton>
-        <SecondaryButton type="button" disabled={!canNext} onClick={() => onPage(current + 1)}>
+        <SecondaryButton
+          type="button"
+          disabled={!canNext}
+          onClick={() => onPage(current + 1)}
+        >
           Next
         </SecondaryButton>
       </div>
@@ -332,11 +350,12 @@ export default function StaffManagement() {
   const [openCreate, setOpenCreate] = useState(false);
   const [openEdit, setOpenEdit] = useState(false);
   const [openReset, setOpenReset] = useState(false);
+  const [openDelete, setOpenDelete] = useState(false);
 
   const [createForm, setCreateForm] = useState({
     name: "",
     email: "",
-    role: "ENUMERATOR",
+    role: "ADMIN", // UI: only ADMIN (per request)
     status: "active", // UI-only (not sent)
     password: "",
   });
@@ -351,6 +370,12 @@ export default function StaffManagement() {
     new_password_confirmation: "",
   });
   const [showResetPw, setShowResetPw] = useState(false);
+
+  const [deleteUser, setDeleteUser] = useState(null);
+  const [deleteForm, setDeleteForm] = useState({
+    current_password: "",
+    confirm_text: "",
+  });
 
   const [lastTempPassword, setLastTempPassword] = useState("");
 
@@ -415,6 +440,7 @@ export default function StaffManagement() {
       role: u?.role || "",
       status: u?.status || "",
     });
+    setErr("");
     setOpenEdit(true);
   }
 
@@ -428,6 +454,16 @@ export default function StaffManagement() {
     setShowResetPw(false);
     setErr("");
     setOpenReset(true);
+  }
+
+  function openDeleteModal(u) {
+    setDeleteUser(u);
+    setDeleteForm({
+      current_password: "",
+      confirm_text: "",
+    });
+    setErr("");
+    setOpenDelete(true);
   }
 
   async function onCreateSubmit(e) {
@@ -454,7 +490,7 @@ export default function StaffManagement() {
       setCreateForm({
         name: "",
         email: "",
-        role: "ENUMERATOR",
+        role: "ADMIN",
         status: "active",
         password: "",
       });
@@ -471,9 +507,11 @@ export default function StaffManagement() {
     setErr("");
 
     const body = {};
-    if (editForm.name !== "" && editForm.name !== editUser.name) body.name = editForm.name;
+    if (editForm.name !== "" && editForm.name !== editUser.name)
+      body.name = editForm.name;
+
+    // per request: remove ENUMERATOR/REVIEWER options; only allow ADMIN changes in UI
     if (editForm.role && editForm.role !== editUser.role) body.role = editForm.role;
-    // Do NOT send status unless backend supports it
 
     try {
       await apiPostForm(`${STAFF_API_BASE}/${editUser.id}`, body, "PATCH");
@@ -530,6 +568,45 @@ export default function StaffManagement() {
     }
   }
 
+  function validateDeleteForm() {
+    if (!deleteForm.current_password) return "Enter your current admin password.";
+    if ((deleteForm.confirm_text || "").trim().toUpperCase() !== "DELETE") {
+      return 'Type "DELETE" to confirm.';
+    }
+    return "";
+  }
+
+  async function onDeleteSubmit(e) {
+    e.preventDefault();
+    if (!deleteUser?.id) return;
+
+    setErr("");
+
+    const v = validateDeleteForm();
+    if (v) {
+      setErr(v);
+      return;
+    }
+
+    try {
+      // Controller expects current_password in body.
+      // Use method spoof DELETE via form-encoded.
+      await apiPostForm(`${STAFF_API_BASE}/${deleteUser.id}`, {
+        current_password: deleteForm.current_password,
+      }, "DELETE");
+
+      setToast("User deleted");
+      setOpenDelete(false);
+      setDeleteUser(null);
+      setDeleteForm({ current_password: "", confirm_text: "" });
+
+      // if deleting last item on page, you may want to go back a page
+      await load();
+    } catch (e2) {
+      setErr(e2?.message || "Delete failed");
+    }
+  }
+
   const showing = useMemo(() => {
     const total = meta?.total ?? rows.length;
     const start =
@@ -546,7 +623,10 @@ export default function StaffManagement() {
 
   return (
     <AuthenticatedLayout title="Staff Management">
-      <PageHeader title="Staff Management" subtitle="Admin-only user management and role assignments." />
+      <PageHeader
+        title="Staff Management"
+        subtitle="Admin-only user management and role assignments."
+      />
 
       <div className="space-y-4">
         <div className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
@@ -575,8 +655,6 @@ export default function StaffManagement() {
                 >
                   <option value="">All</option>
                   <option value="ADMIN">ADMIN</option>
-                  <option value="ENUMERATOR">ENUMERATOR</option>
-                  <option value="REVIEWER">REVIEWER</option>
                 </Select>
               </div>
 
@@ -597,7 +675,9 @@ export default function StaffManagement() {
               </div>
 
               <div className="md:col-span-2">
-                <div className="text-xs font-semibold text-slate-700">Status (optional)</div>
+                <div className="text-xs font-semibold text-slate-700">
+                  Status (optional)
+                </div>
                 <Select
                   value={status}
                   onChange={(e) => {
@@ -609,7 +689,9 @@ export default function StaffManagement() {
                   <option value="active">active</option>
                   <option value="inactive">inactive</option>
                 </Select>
-                <div className="mt-1 text-xs text-slate-500">Filter only works if backend supports it.</div>
+                <div className="mt-1 text-xs text-slate-500">
+                  Filter only works if backend supports it.
+                </div>
               </div>
 
               <div className="md:col-span-2 flex items-end justify-end gap-2">
@@ -648,7 +730,10 @@ export default function StaffManagement() {
                   <span className="font-semibold text-slate-900">
                     {showing.start}-{showing.end}
                   </span>{" "}
-                  of <span className="font-semibold text-slate-900">{showing.total}</span>
+                  of{" "}
+                  <span className="font-semibold text-slate-900">
+                    {showing.total}
+                  </span>
                 </>
               )}
             </div>
@@ -672,7 +757,9 @@ export default function StaffManagement() {
                 Temporary password (create response)
               </div>
               <div className="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="text-sm font-semibold text-slate-900">{lastTempPassword}</div>
+                <div className="text-sm font-semibold text-slate-900">
+                  {lastTempPassword}
+                </div>
                 <SecondaryButton
                   type="button"
                   onClick={async () => {
@@ -720,13 +807,19 @@ export default function StaffManagement() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-6 text-center text-sm text-slate-600">
+                    <td
+                      colSpan={6}
+                      className="px-4 py-6 text-center text-sm text-slate-600"
+                    >
                       Loading…
                     </td>
                   </tr>
                 ) : rows.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-600">
+                    <td
+                      colSpan={6}
+                      className="px-4 py-8 text-center text-sm text-slate-600"
+                    >
                       No staff found.
                     </td>
                   </tr>
@@ -734,10 +827,14 @@ export default function StaffManagement() {
                   rows.map((u) => (
                     <tr key={u.id} className="hover:bg-slate-50/60">
                       <td className="border-b border-slate-100 px-4 py-3">
-                        <div className="text-sm font-semibold text-slate-900">{u.name}</div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          {u.name}
+                        </div>
                         <div className="text-xs text-slate-500">ID: {u.id}</div>
                       </td>
-                      <td className="border-b border-slate-100 px-4 py-3 text-sm text-slate-700">{u.email}</td>
+                      <td className="border-b border-slate-100 px-4 py-3 text-sm text-slate-700">
+                        {u.email}
+                      </td>
                       <td className="border-b border-slate-100 px-4 py-3">
                         <span className="inline-flex items-center rounded-full bg-slate-900 px-2 py-0.5 text-xs font-semibold text-white">
                           {roleLabel(u.role)}
@@ -751,11 +848,24 @@ export default function StaffManagement() {
                       </td>
                       <td className="border-b border-slate-100 px-4 py-3 text-right">
                         <div className="flex justify-end gap-2">
-                          <SecondaryButton type="button" onClick={() => openEditModal(u)}>
+                          <SecondaryButton
+                            type="button"
+                            onClick={() => openEditModal(u)}
+                          >
                             Edit
                           </SecondaryButton>
-                          <DangerButton type="button" onClick={() => openResetModal(u)}>
+                          <DangerButton
+                            type="button"
+                            onClick={() => openResetModal(u)}
+                          >
                             Reset Password
+                          </DangerButton>
+                          <DangerButton
+                            type="button"
+                            className="bg-rose-700 hover:bg-rose-800"
+                            onClick={() => openDeleteModal(u)}
+                          >
+                            Delete
                           </DangerButton>
                         </div>
                       </td>
@@ -784,13 +894,19 @@ export default function StaffManagement() {
           </PrimaryButton>
         }
       >
-        <form id="create-staff-form" onSubmit={onCreateSubmit} className="space-y-4">
+        <form
+          id="create-staff-form"
+          onSubmit={onCreateSubmit}
+          className="space-y-4"
+        >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <div className="text-xs font-semibold text-slate-700">Name</div>
               <TextInput
                 value={createForm.name}
-                onChange={(e) => setCreateForm((s) => ({ ...s, name: e.target.value }))}
+                onChange={(e) =>
+                  setCreateForm((s) => ({ ...s, name: e.target.value }))
+                }
                 placeholder="Full name"
                 required
               />
@@ -801,7 +917,9 @@ export default function StaffManagement() {
               <TextInput
                 type="email"
                 value={createForm.email}
-                onChange={(e) => setCreateForm((s) => ({ ...s, email: e.target.value }))}
+                onChange={(e) =>
+                  setCreateForm((s) => ({ ...s, email: e.target.value }))
+                }
                 placeholder="email@domain.com"
                 required
               />
@@ -809,33 +927,50 @@ export default function StaffManagement() {
 
             <div>
               <div className="text-xs font-semibold text-slate-700">Role</div>
-              <Select value={createForm.role} onChange={(e) => setCreateForm((s) => ({ ...s, role: e.target.value }))}>
+              <Select
+                value={createForm.role}
+                onChange={(e) =>
+                  setCreateForm((s) => ({ ...s, role: e.target.value }))
+                }
+              >
+                {/* per request: removed ENUMERATOR and REVIEWER */}
                 <option value="ADMIN">ADMIN</option>
-                <option value="ENUMERATOR">ENUMERATOR</option>
-                <option value="REVIEWER">REVIEWER</option>
               </Select>
             </div>
 
             <div>
-              <div className="text-xs font-semibold text-slate-700">Status (UI-only)</div>
-              <Select value={createForm.status} onChange={(e) => setCreateForm((s) => ({ ...s, status: e.target.value }))}>
+              <div className="text-xs font-semibold text-slate-700">
+                Status (UI-only)
+              </div>
+              <Select
+                value={createForm.status}
+                onChange={(e) =>
+                  setCreateForm((s) => ({ ...s, status: e.target.value }))
+                }
+              >
                 <option value="active">active</option>
                 <option value="inactive">inactive</option>
               </Select>
-              <div className="mt-1 text-xs text-slate-500">Not saved (backend rejects status).</div>
+              <div className="mt-1 text-xs text-slate-500">
+                Not saved (backend rejects status).
+              </div>
             </div>
 
             <div className="sm:col-span-2">
               <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold text-slate-700">Password (optional)</div>
+                <div className="text-xs font-semibold text-slate-700">
+                  Password (optional)
+                </div>
                 <button
                   type="button"
                   className="text-xs font-semibold text-slate-700 underline decoration-slate-300 underline-offset-4 hover:text-slate-900"
                   onClick={() => {
                     const gen = (len = 12) => {
-                      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
+                      const chars =
+                        "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
                       let out = "";
-                      for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+                      for (let i = 0; i < len; i++)
+                        out += chars[Math.floor(Math.random() * chars.length)];
                       return out;
                     };
                     setCreateForm((s) => ({ ...s, password: gen(12) }));
@@ -847,11 +982,14 @@ export default function StaffManagement() {
               <TextInput
                 type="text"
                 value={createForm.password}
-                onChange={(e) => setCreateForm((s) => ({ ...s, password: e.target.value }))}
+                onChange={(e) =>
+                  setCreateForm((s) => ({ ...s, password: e.target.value }))
+                }
                 placeholder="Leave blank to auto-generate on server"
               />
               <div className="mt-1 text-xs text-slate-500">
-                If blank, backend may return <span className="font-semibold">temp_password</span>.
+                If blank, backend may return{" "}
+                <span className="font-semibold">temp_password</span>.
               </div>
             </div>
           </div>
@@ -868,37 +1006,55 @@ export default function StaffManagement() {
           setEditUser(null);
         }}
         footer={
-          <PrimaryButton form="edit-staff-form" type="submit" disabled={!editUser}>
+          <PrimaryButton
+            form="edit-staff-form"
+            type="submit"
+            disabled={!editUser}
+          >
             Save
           </PrimaryButton>
         }
       >
-        <form id="edit-staff-form" onSubmit={onEditSubmit} className="space-y-4">
+        <form
+          id="edit-staff-form"
+          onSubmit={onEditSubmit}
+          className="space-y-4"
+        >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <div className="text-xs font-semibold text-slate-700">Name</div>
               <TextInput
                 value={editForm.name}
-                onChange={(e) => setEditForm((s) => ({ ...s, name: e.target.value }))}
+                onChange={(e) =>
+                  setEditForm((s) => ({ ...s, name: e.target.value }))
+                }
                 placeholder="Full name"
               />
             </div>
 
             <div>
               <div className="text-xs font-semibold text-slate-700">Role</div>
-              <Select value={editForm.role || ""} onChange={(e) => setEditForm((s) => ({ ...s, role: e.target.value }))}>
+              <Select
+                value={editForm.role || ""}
+                onChange={(e) =>
+                  setEditForm((s) => ({ ...s, role: e.target.value }))
+                }
+              >
                 <option value="">(no change)</option>
+                {/* per request: removed ENUMERATOR and REVIEWER */}
                 <option value="ADMIN">ADMIN</option>
-                <option value="ENUMERATOR">ENUMERATOR</option>
-                <option value="REVIEWER">REVIEWER</option>
               </Select>
             </div>
 
             <div>
-              <div className="text-xs font-semibold text-slate-700">Status (UI-only)</div>
+              <div className="text-xs font-semibold text-slate-700">
+                Status (UI-only)
+              </div>
               <Select
                 value={editForm.status ?? ""}
-                onChange={(e) => setEditForm((s) => ({ ...s, status: e.target.value }))}
+                onChange={(e) =>
+                  setEditForm((s) => ({ ...s, status: e.target.value }))
+                }
               >
                 <option value="">(no change)</option>
                 <option value="active">active</option>
@@ -926,23 +1082,39 @@ export default function StaffManagement() {
           setShowResetPw(false);
         }}
         footer={
-          <DangerButton type="submit" form="reset-password-form" disabled={!resetUser}>
+          <DangerButton
+            type="submit"
+            form="reset-password-form"
+            disabled={!resetUser}
+          >
             Save Password
           </DangerButton>
         }
       >
-        <form id="reset-password-form" onSubmit={onResetPasswordSubmit} className="space-y-4">
+        <form
+          id="reset-password-form"
+          onSubmit={onResetPasswordSubmit}
+          className="space-y-4"
+        >
           <div className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
-            This will set the selected user's password to the value you enter. For confirmation, enter your current admin password.
+            This will set the selected user's password to the value you enter.
+            For confirmation, enter your current admin password.
           </div>
 
           <div className="space-y-3">
             <div>
-              <div className="text-xs font-semibold text-slate-700">Your Current Password (Admin)</div>
+              <div className="text-xs font-semibold text-slate-700">
+                Your Current Password (Admin)
+              </div>
               <TextInput
                 type={showResetPw ? "text" : "password"}
                 value={resetForm.current_password}
-                onChange={(e) => setResetForm((s) => ({ ...s, current_password: e.target.value }))}
+                onChange={(e) =>
+                  setResetForm((s) => ({
+                    ...s,
+                    current_password: e.target.value,
+                  }))
+                }
                 placeholder="Enter your current password"
                 autoComplete="current-password"
                 required
@@ -950,11 +1122,15 @@ export default function StaffManagement() {
             </div>
 
             <div>
-              <div className="text-xs font-semibold text-slate-700">New Password (for selected user)</div>
+              <div className="text-xs font-semibold text-slate-700">
+                New Password (for selected user)
+              </div>
               <TextInput
                 type={showResetPw ? "text" : "password"}
                 value={resetForm.new_password}
-                onChange={(e) => setResetForm((s) => ({ ...s, new_password: e.target.value }))}
+                onChange={(e) =>
+                  setResetForm((s) => ({ ...s, new_password: e.target.value }))
+                }
                 placeholder="At least 8 characters"
                 autoComplete="new-password"
                 required
@@ -962,11 +1138,18 @@ export default function StaffManagement() {
             </div>
 
             <div>
-              <div className="text-xs font-semibold text-slate-700">Confirm New Password</div>
+              <div className="text-xs font-semibold text-slate-700">
+                Confirm New Password
+              </div>
               <TextInput
                 type={showResetPw ? "text" : "password"}
                 value={resetForm.new_password_confirmation}
-                onChange={(e) => setResetForm((s) => ({ ...s, new_password_confirmation: e.target.value }))}
+                onChange={(e) =>
+                  setResetForm((s) => ({
+                    ...s,
+                    new_password_confirmation: e.target.value,
+                  }))
+                }
                 placeholder="Repeat new password"
                 autoComplete="new-password"
                 required
@@ -989,13 +1172,19 @@ export default function StaffManagement() {
                 className="text-sm font-semibold text-slate-700 underline decoration-slate-300 underline-offset-4 hover:text-slate-900"
                 onClick={() => {
                   const gen = (len = 12) => {
-                    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
+                    const chars =
+                      "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
                     let out = "";
-                    for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+                    for (let i = 0; i < len; i++)
+                      out += chars[Math.floor(Math.random() * chars.length)];
                     return out;
                   };
                   const pw = gen(12);
-                  setResetForm((s) => ({ ...s, new_password: pw, new_password_confirmation: pw }));
+                  setResetForm((s) => ({
+                    ...s,
+                    new_password: pw,
+                    new_password_confirmation: pw,
+                  }));
                   setShowResetPw(true);
                 }}
               >
@@ -1004,9 +1193,60 @@ export default function StaffManagement() {
             </div>
 
             <div className="text-xs text-slate-500">
-              Sent as form data with <code>_token</code> + <code>current_password</code> + <code>new_password</code> +{" "}
+              Sent as form data with <code>_token</code> +{" "}
+              <code>current_password</code> + <code>new_password</code> +{" "}
               <code>new_password_confirmation</code>.
             </div>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Delete modal */}
+      <Modal
+        open={openDelete}
+        title="Delete User"
+        subtitle={deleteUser ? `Delete ${deleteUser.email} permanently` : ""}
+        onClose={() => {
+          setOpenDelete(false);
+          setDeleteUser(null);
+          setDeleteForm({ current_password: "", confirm_text: "" });
+        }}
+        footer={
+          <DangerButton type="submit" form="delete-user-form" disabled={!deleteUser}>
+            Delete
+          </DangerButton>
+        }
+      >
+        <form id="delete-user-form" onSubmit={onDeleteSubmit} className="space-y-4">
+          <div className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800 ring-1 ring-rose-200">
+            This action is permanent. To proceed, enter your current admin password and type{" "}
+            <span className="font-semibold">DELETE</span>.
+          </div>
+
+          <div>
+            <div className="text-xs font-semibold text-slate-700">Your Current Password (Admin)</div>
+            <TextInput
+              type="password"
+              value={deleteForm.current_password}
+              onChange={(e) => setDeleteForm((s) => ({ ...s, current_password: e.target.value }))}
+              placeholder="Enter your current password"
+              autoComplete="current-password"
+              required
+            />
+          </div>
+
+          <div>
+            <div className="text-xs font-semibold text-slate-700">Type DELETE to confirm</div>
+            <TextInput
+              value={deleteForm.confirm_text}
+              onChange={(e) => setDeleteForm((s) => ({ ...s, confirm_text: e.target.value }))}
+              placeholder="DELETE"
+              required
+            />
+          </div>
+
+          <div className="text-xs text-slate-500">
+            Request: <code>POST</code> with <code>_method=DELETE</code> and <code>current_password</code>.
           </div>
         </form>
       </Modal>

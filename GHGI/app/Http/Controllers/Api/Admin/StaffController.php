@@ -12,7 +12,7 @@ use Illuminate\Support\Str;
 class StaffController extends Controller
 {
     /**
-     * GET /admin/staff   (or /api/admin/staff depending on your routes)
+     * GET /admin/staff
      * Query params:
      * - q (search by name/email)
      * - role (ADMIN|ENUMERATOR|REVIEWER)
@@ -99,7 +99,7 @@ class StaffController extends Controller
         $user->email = $validated['email'];
         $user->role = strtoupper($validated['role']);
 
-        // IMPORTANT: assign plain, cast will hash on save
+        // assign plain; cast will hash on save
         $user->password = $plain;
 
         if ($hasStatus && array_key_exists('status', $validated) && $validated['status'] !== null) {
@@ -116,7 +116,6 @@ class StaffController extends Controller
                 'role' => $user->role,
                 'status' => $hasStatus ? ($user->status ?? null) : null,
             ],
-            // send back plain only on create (you can remove if you don't want to reveal it)
             'temp_password' => $plain,
         ], 201);
     }
@@ -186,19 +185,14 @@ class StaffController extends Controller
 
         $actor = $request->user();
 
-        // verify admin password
         if (!$actor || !Hash::check($request->input('current_password'), $actor->password)) {
             return response()->json(['message' => 'Current password is incorrect'], 422);
         }
 
         $user = User::findOrFail($id);
 
-        // IMPORTANT: assign plain, cast will hash on save
         $user->password = $request->input('new_password');
-
-        // invalidate remember-me token
         $user->setRememberToken(Str::random(60));
-
         $user->save();
 
         return response()->json([
@@ -206,6 +200,55 @@ class StaffController extends Controller
             'data' => [
                 'id' => $user->id,
                 'email' => $user->email,
+            ],
+        ]);
+    }
+
+    /**
+     * DELETE /admin/staff/{id}
+     *
+     * Allows deleting ADMIN accounts.
+     * Requires:
+     * - current_password (admin's current password) to confirm destructive action
+     *
+     * Safety rules kept:
+     * - cannot delete self
+     * - cannot delete the LAST remaining admin (prevents total lockout)
+     */
+    public function destroy(Request $request, int $id)
+    {
+        $request->validate([
+            'current_password' => ['required', 'string'],
+        ]);
+
+        $actor = $request->user();
+
+        if (!$actor || !Hash::check($request->input('current_password'), $actor->password)) {
+            return response()->json(['message' => 'Current password is incorrect'], 422);
+        }
+
+        // cannot delete yourself
+        if ((int) $actor->id === (int) $id) {
+            return response()->json(['message' => 'You cannot delete your own account'], 422);
+        }
+
+        $user = User::findOrFail($id);
+
+        // Allow deleting ADMIN accounts, but block deleting the last admin to avoid lockout
+        $targetRole = strtoupper((string) $user->role);
+        if ($targetRole === 'ADMIN') {
+            $adminCount = User::query()->where('role', 'ADMIN')->count();
+            if ($adminCount <= 1) {
+                return response()->json(['message' => 'Cannot delete the last ADMIN account'], 422);
+            }
+        }
+
+        $user->delete();
+
+        return response()->json([
+            'ok' => true,
+            'data' => [
+                'id' => $id,
             ],
         ]);
     }
