@@ -938,24 +938,6 @@ export default function StaffManagement() {
               </Select>
             </div>
 
-            <div>
-              <div className="text-xs font-semibold text-slate-700">
-                Status (UI-only)
-              </div>
-              <Select
-                value={createForm.status}
-                onChange={(e) =>
-                  setCreateForm((s) => ({ ...s, status: e.target.value }))
-                }
-              >
-                <option value="active">active</option>
-                <option value="inactive">inactive</option>
-              </Select>
-              <div className="mt-1 text-xs text-slate-500">
-                Not saved (backend rejects status).
-              </div>
-            </div>
-
             <div className="sm:col-span-2">
               <div className="flex items-center justify-between">
                 <div className="text-xs font-semibold text-slate-700">
@@ -1046,22 +1028,6 @@ export default function StaffManagement() {
               </Select>
             </div>
 
-            <div>
-              <div className="text-xs font-semibold text-slate-700">
-                Status (UI-only)
-              </div>
-              <Select
-                value={editForm.status ?? ""}
-                onChange={(e) =>
-                  setEditForm((s) => ({ ...s, status: e.target.value }))
-                }
-              >
-                <option value="">(no change)</option>
-                <option value="active">active</option>
-                <option value="inactive">inactive</option>
-              </Select>
-              <div className="mt-1 text-xs text-slate-500">Not saved.</div>
-            </div>
           </div>
         </form>
       </Modal>
