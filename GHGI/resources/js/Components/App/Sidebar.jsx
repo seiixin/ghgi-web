@@ -1,30 +1,65 @@
 // resources/js/Components/App/Sidebar.jsx
-import React from "react";
+import React, { useMemo, useState } from "react";
 import { Link, usePage } from "@inertiajs/react";
 
 function cn(...xs) {
   return xs.filter(Boolean).join(" ");
 }
 
-function NavItem({ href, active, icon, children }) {
+/**
+ * Icon wrapper to keep consistent sizing + hover styles.
+ */
+function NavIcon({ children, active }) {
+  return (
+    <span
+      className={cn(
+        "grid h-9 w-9 place-items-center rounded-xl ring-1 transition",
+        active
+          ? "bg-slate-800 ring-slate-700/80"
+          : "bg-slate-800/40 ring-slate-700/60 group-hover:bg-slate-800/70"
+      )}
+      aria-hidden="true"
+    >
+      {children}
+    </span>
+  );
+}
+
+function NavItem({ href, active, icon, label, badge, disabled }) {
   return (
     <Link
-      href={href}
+      href={disabled ? "#" : href}
+      aria-current={active ? "page" : undefined}
       className={cn(
-        "flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition",
+        "group flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium transition",
+        disabled && "pointer-events-none opacity-60",
         active
           ? "bg-slate-800 text-white"
           : "text-slate-200 hover:bg-slate-800/50 hover:text-white"
       )}
     >
-      <span className="grid h-8 w-8 place-items-center rounded-lg bg-slate-800/50 ring-1 ring-slate-700/60">
-        {icon}
-      </span>
-      <span>{children}</span>
+      <NavIcon active={active}>{icon}</NavIcon>
+
+      <span className="flex-1">{label}</span>
+
+      {badge ? (
+        <span className="rounded-full bg-slate-800/70 px-2 py-0.5 text-[11px] font-semibold text-slate-200 ring-1 ring-slate-700/60">
+          {badge}
+        </span>
+      ) : null}
     </Link>
   );
 }
 
+function SectionLabel({ children }) {
+  return (
+    <div className="px-4 pt-5 pb-2 text-[11px] font-semibold tracking-wider text-slate-400">
+      {children}
+    </div>
+  );
+}
+
+/** Icons */
 function IconHome() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -121,59 +156,213 @@ function IconInbox() {
     </svg>
   );
 }
+function IconChevron({ open }) {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      className={cn("transition", open ? "rotate-90" : "rotate-0")}
+      aria-hidden="true"
+    >
+      <path
+        d="M9 18l6-6-6-6"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+function IconLogout() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M10 17l1 4h10V3H11l-1 4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3 12h10"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M7 8l-4 4 4 4"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
-export default function Sidebar() {
-  const { url } = usePage();
-
-  // One sidebar for all users (ADMIN + ENUMERATOR)
-  // Permissions are enforced in backend (routes/middleware) and by hiding CRUD buttons on frontend.
-  const items = [
+/**
+ * Build nav groups here.
+ * - One sidebar for all users (ADMIN + ENUMERATOR)
+ * - Permissions are enforced in backend (routes/middleware) and by hiding CRUD buttons on frontend.
+ */
+function buildNavItems(url) {
+  return [
     {
-      href: "/admin/dashboard",
-      active: url.startsWith("/admin/dashboard") || url === "/dashboard",
-      icon: <IconHome />,
-      label: "Dashboard",
-    },
-    {
-      href: "/admin/quantification",
-      active: url.startsWith("/admin/quantification"),
-      icon: <IconSheet />,
-      label: "Quantification Sheet",
-    },
-    {
-      href: "/admin/summary",
-      active: url.startsWith("/admin/summary"),
-      icon: <IconSummary />,
-      label: "GHG Summary",
-    },
-    {
-      href: "/admin/map",
-      active: url.startsWith("/admin/map"),
-      icon: <IconMap />,
-      label: "Map",
-    },
-    {
-      href: "/admin/submissions",
-      active: url.startsWith("/admin/submissions"),
-      icon: <IconInbox />,
-      label: "Submissions",
+      title: "Main",
+      items: [
+        {
+          href: "/admin/dashboard",
+          active: url.startsWith("/admin/dashboard") || url === "/dashboard",
+          icon: <IconHome />,
+          label: "Dashboard",
+        },
+        {
+          href: "/admin/quantification",
+          active: url.startsWith("/admin/quantification"),
+          icon: <IconSheet />,
+          label: "Quantification Sheet",
+        },
+        {
+          href: "/admin/summary",
+          active: url.startsWith("/admin/summary"),
+          icon: <IconSummary />,
+          label: "GHG Summary",
+        },
+        {
+          href: "/admin/map",
+          active: url.startsWith("/admin/map"),
+          icon: <IconMap />,
+          label: "Map",
+        },
+      ],
     },
   ];
+}
+
+/**
+ * Sidebar
+ * - Collapsible header (brand + minimize)
+ * - Groups with section labels
+ * - Bottom utility section (e.g., logout)
+ * - Active state derived from Inertia url
+ */
+export default function Sidebar() {
+  const { url, props } = usePage();
+
+  // If your app provides auth user in props, these are safe optional reads.
+  const user =
+    props?.auth?.user || props?.auth?.user_data || props?.user || null;
+
+  const [collapsed, setCollapsed] = useState(false);
+
+  const groups = useMemo(() => buildNavItems(url), [url]);
 
   return (
-    <aside className="min-h-screen w-72 bg-slate-900 text-white">
-      <div className="px-3 pt-4 pb-6">
-        <div className="space-y-1">
-          {items.map((it) => (
-            <NavItem
-              key={it.href}
-              href={it.href}
-              active={it.active}
-              icon={it.icon}
-            >
-              {it.label}
-            </NavItem>
-          ))}
+    <aside
+      className={cn(
+        "min-h-screen bg-slate-900 text-white ring-1 ring-slate-800/80",
+        collapsed ? "w-[92px]" : "w-72"
+      )}
+    >
+      {/* Header / Brand */}
+      <div className="px-4 pt-5 pb-4">
+        <div className="flex items-center gap-3">
+          <div className="grid h-10 w-10 place-items-center rounded-2xl bg-slate-800/60 ring-1 ring-slate-700/60">
+            <IconInbox />
+          </div>
+
+          {!collapsed ? (
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-semibold leading-5">
+                GHGI Admin
+              </div>
+              <div className="truncate text-xs text-slate-400">
+                {user?.name ? `Signed in as ${user.name}` : "Navigation"}
+              </div>
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => setCollapsed((v) => !v)}
+            className={cn(
+              "grid h-10 w-10 place-items-center rounded-2xl transition",
+              "bg-slate-800/40 ring-1 ring-slate-700/60 hover:bg-slate-800/70"
+            )}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            <IconChevron open={!collapsed} />
+          </button>
+        </div>
+      </div>
+
+      {/* Nav */}
+      <nav className="px-3 pb-6">
+        {groups.map((g) => (
+          <div key={g.title} className="mb-2">
+            {!collapsed ? <SectionLabel>{g.title}</SectionLabel> : null}
+
+            <div className="space-y-1">
+              {g.items.map((it) => (
+                <NavItem
+                  key={it.href}
+                  href={it.href}
+                  active={!!it.active}
+                  icon={it.icon}
+                  label={collapsed ? "" : it.label}
+                  badge={collapsed ? null : it.badge}
+                  disabled={!!it.disabled}
+                />
+              ))}
+            </div>
+
+            {/* Collapsed labels (tooltip-like via title attribute) */}
+            {collapsed ? (
+              <div className="sr-only">
+                {g.items.map((it) => (
+                  <span key={it.href}>{it.label}</span>
+                ))}
+              </div>
+            ) : null}
+
+            {/* When collapsed, show icons centered with title attr */}
+            {collapsed ? (
+              <div className="-mt-[calc(100%)] hidden" />
+            ) : null}
+          </div>
+        ))}
+      </nav>
+
+      {/* Footer actions */}
+      <div className="mt-auto px-3 pb-5">
+        <div
+          className={cn(
+            "rounded-2xl bg-slate-800/30 ring-1 ring-slate-700/50",
+            collapsed ? "p-2" : "p-3"
+          )}
+        >
+          {!collapsed ? (
+            <div className="mb-2 text-xs text-slate-400">
+              Quick actions
+            </div>
+          ) : null}
+
+          <Link
+            href="/logout"
+            method="post"
+            as="button"
+            className={cn(
+              "w-full group flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium transition",
+              "text-slate-200 hover:bg-slate-800/60 hover:text-white"
+            )}
+          >
+            <NavIcon active={false}>
+              <IconLogout />
+            </NavIcon>
+            {!collapsed ? <span className="flex-1 text-left">Logout</span> : null}
+          </Link>
         </div>
       </div>
     </aside>
