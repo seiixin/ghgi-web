@@ -336,12 +336,6 @@ export default function Dashboard() {
         />
 
         <StatCard
-          label="TOTAL LGUS"
-          value={totalLgusDisplay}
-          hint="Municipalities included in the community-level GHG inventory."
-        />
-
-        <StatCard
           label="TOTAL EMISSIONS"
           value={totalEmissionsDisplay}
           suffix="tCO₂e"

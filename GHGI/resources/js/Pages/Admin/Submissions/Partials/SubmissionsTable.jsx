@@ -1,7 +1,7 @@
 // resources/js/Pages/Admin/Quantification/Submissions/SubmissionsTable.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import DataTable from "../../../../Components/Shared/DataTable";
-import AnswersViewer from "./AnswersViewer";
+import AnswersViewer from "./AnswersViewer.jsx";
 import EditSubmissionModal from "./EditSubmissionModal";
 
 function getCsrfToken() {
