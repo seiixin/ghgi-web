@@ -770,15 +770,6 @@ export default function StaffManagement() {
             <Pagination meta={meta} onPage={(p) => setPage(p)} />
           </div>
         </div>
-
-        <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-          <div className="text-sm font-semibold text-slate-900">CSRF note</div>
-          <div className="mt-2 text-sm text-slate-700">
-            This page sends write requests as <code className="font-semibold">application/x-www-form-urlencoded</code> and includes
-            <code className="font-semibold"> _token</code> from <code className="font-semibold">meta[name=&quot;csrf-token&quot;]</code>.
-            This is the most reliable way to avoid 419 CSRF mismatch with Laravel session middleware.
-          </div>
-        </div>
       </div>
 
       {/* Create modal */}
